@@ -99,6 +99,32 @@ namespace
         inline static std::vector<std::string> g_order;
     };
 
+    struct TestInterface : Interface
+    {
+        virtual int value() const = 0;
+    };
+
+    struct TestInterfaceImpl : TestInterface
+    {
+        explicit TestInterfaceImpl(int initial)
+            : m_value(initial)
+        {
+        }
+
+        int value() const override
+        {
+            return m_value;
+        }
+
+        void imgui() const override
+        {
+            ++guiCalls;
+        }
+
+        int m_value;
+        mutable int guiCalls = 0;
+    };
+
     struct LifecycleContainer : Container
     {
         void imgui() const override {}
@@ -328,6 +354,79 @@ namespace
         CHECK(&module.getContainer() == &c);
         CHECK(c.hasModule<RecorderModule>());
         CHECK(c.getModule<RecorderModule>() == &module);
+    }
+
+    void testContainerInterface()
+    {
+        Container c("c");
+
+        CHECK(c.interface() == nullptr);
+        CHECK(!c.hasInterface<TestInterface>());
+        CHECK(c.getInterface<TestInterface>() == nullptr);
+
+        TestInterface& interface =
+            c.addInterface<TestInterface, TestInterfaceImpl>(7);
+
+        CHECK_EQ(interface.value(), 7);
+        CHECK(&interface.owner() == &c);
+        CHECK(c.interface() == &interface);
+        CHECK(c.hasInterface<TestInterface>());
+        CHECK(c.hasInterface<TestInterfaceImpl>());
+        CHECK(c.getInterface<TestInterface>() == &interface);
+        CHECK(c.getInterface<TestInterfaceImpl>() == &interface);
+
+        const Container& constContainer = c;
+        CHECK(constContainer.getInterface<TestInterface>() == &interface);
+        CHECK(constContainer.interface() == &interface);
+
+        TestInterfaceImpl& implementation =
+            static_cast<TestInterfaceImpl&>(interface);
+        const Interface& base = implementation;
+        base.imgui();
+        CHECK_EQ(implementation.guiCalls, 1);
+
+        bool threw = false;
+
+        try
+        {
+            c.addInterface<TestInterface, TestInterfaceImpl>(9);
+        }
+        catch (const std::exception&)
+        {
+            threw = true;
+        }
+
+        CHECK(threw);
+        CHECK_EQ(interface.value(), 7);
+
+        c.removeInterface();
+
+        CHECK(c.interface() == nullptr);
+        CHECK(!c.hasInterface<TestInterface>());
+    }
+
+    void testContainerMoveRepointsInterface()
+    {
+        Container a("a");
+
+        TestInterface& interface =
+            a.addInterface<TestInterface, TestInterfaceImpl>(11);
+
+        CHECK(&interface.owner() == &a);
+
+        Container b = std::move(a);
+
+        CHECK(&interface.owner() == &b);
+        CHECK(b.getInterface<TestInterface>() == &interface);
+        CHECK(a.interface() == nullptr);
+
+        Container c("c");
+
+        c = std::move(b);
+
+        CHECK(&interface.owner() == &c);
+        CHECK(c.getInterface<TestInterface>() == &interface);
+        CHECK(b.interface() == nullptr);
     }
 
     void testExposedBoxes()
@@ -757,6 +856,116 @@ namespace
         CHECK(scheduler.done());
     }
 
+    void testApplicationStepCompletesJob()
+    {
+        Application app;
+
+        app.setFrameRateLimit(0.0);
+
+        int runs = 0;
+
+        app.getScheduler()->createJob(
+            [&]
+            {
+                ++runs;
+                return 1;
+            }
+        );
+
+        CHECK_EQ(app.step(), 1);
+        CHECK_EQ(runs, 1);
+
+        CHECK_EQ(app.step(), 1);
+        CHECK_EQ(runs, 1);
+    }
+
+    void testApplicationRunStopsOnRequestExit()
+    {
+        Application app;
+
+        app.setFrameRateLimit(0.0);
+
+        int runs = 0;
+
+        app.getScheduler()->createJob(
+            [&]
+            {
+                ++runs;
+
+                if (runs == 3)
+                    app.requestExit();
+
+                return 0;
+            }
+        );
+
+        app.run();
+
+        CHECK_EQ(runs, 3);
+        CHECK(app.exitRequested());
+
+        app.unloadGame();
+        CHECK(!app.exitRequested());
+    }
+
+    void testApplicationRunPicksUpJobsCreatedDuringExecute()
+    {
+        Application app;
+
+        app.setFrameRateLimit(0.0);
+
+        Scheduler* scheduler = app.getScheduler();
+
+        int childRuns = 0;
+
+        scheduler->createJob(
+            [&]
+            {
+                scheduler->createJob(
+                    [&]
+                    {
+                        ++childRuns;
+                        return 1;
+                    }
+                );
+
+                return 1;
+            }
+        );
+
+        app.run();
+
+        CHECK_EQ(childRuns, 1);
+        CHECK(scheduler->done());
+    }
+
+    void testApplicationEmptySchedulerIsDone()
+    {
+        Application app;
+
+        app.setFrameRateLimit(0.0);
+
+        CHECK(app.getScheduler()->done());
+        CHECK_EQ(app.step(), 1);
+
+        app.run();
+
+        CHECK(!app.exitRequested());
+    }
+
+    void testApplicationFrameRateLimit()
+    {
+        Application app;
+
+        CHECK_EQ(app.frameRateLimit(), 60.0);
+
+        app.setFrameRateLimit(144.0);
+        CHECK_EQ(app.frameRateLimit(), 144.0);
+
+        app.setFrameRateLimit(-1.0);
+        CHECK_EQ(app.frameRateLimit(), 0.0);
+    }
+
     void testTypeIdStability()
     {
         // Compile-time stable and deterministic: the same type always maps
@@ -785,6 +994,336 @@ namespace
         CHECK(!c.hasModule<IdTypeA>());
     }
 
+    struct TestEvent { int value = 0; };
+    struct OtherEvent { int value = 0; };
+    struct EventModuleProbe { bool fired = false; };
+
+    struct EventSubscriberModule : Module
+    {
+        void imgui() const override {}
+
+        EventBus::Subscription subscription;
+    };
+
+    void testEventBusRegisterSubscribeEmit()
+    {
+        Application app;
+
+        const EventBus::EventHandle handle =
+            app.createEvent<TestEvent>("TestEvent");
+
+        CHECK_NE(
+            handle,
+            static_cast<EventBus::EventHandle>(0)
+        );
+
+        auto& world = app.createContainer<Container>("world");
+
+        int received = 0;
+
+        auto sub = world.subscribe<TestEvent>(
+            [&](const TestEvent& e) { received += e.value; }
+        );
+
+        CHECK(sub.valid());
+
+        app.eventBus().emit(TestEvent{7});
+        app.eventBus().emit(TestEvent{3});
+
+        CHECK_EQ(received, 10);
+    }
+
+    void testEventBusRequiresRegistrationBeforeSubscribe()
+    {
+        Application app;
+
+        auto& world = app.createContainer<Container>("world");
+
+        bool threw = false;
+
+        try
+        {
+            world.subscribe<TestEvent>([](const TestEvent&) {});
+        }
+        catch (const std::exception&)
+        {
+            threw = true;
+        }
+
+        CHECK(threw);
+    }
+
+    void testEventBusSingleSubscriberOnly()
+    {
+        Application app;
+
+        app.createEvent<TestEvent>("TestEvent");
+
+        auto& a = app.createContainer<Container>("a");
+        auto& b = app.createContainer<Container>("b");
+
+        auto subA = a.subscribe<TestEvent>([](const TestEvent&) {});
+
+        bool threw = false;
+
+        try
+        {
+            auto subB = b.subscribe<TestEvent>([](const TestEvent&) {});
+        }
+        catch (const std::exception&)
+        {
+            threw = true;
+        }
+
+        CHECK(threw);
+
+        // Releasing the slot lets another container subscribe.
+        subA.unsubscribe();
+        CHECK(!subA.valid());
+
+        auto subB = b.subscribe<TestEvent>([](const TestEvent&) {});
+        CHECK(subB.valid());
+    }
+
+    void testEventBusUnsubscribeStopsDelivery()
+    {
+        Application app;
+
+        app.createEvent<TestEvent>("TestEvent");
+
+        auto& world = app.createContainer<Container>("world");
+
+        int received = 0;
+
+        auto sub = world.subscribe<TestEvent>(
+            [&](const TestEvent&) { ++received; }
+        );
+
+        app.eventBus().emit(TestEvent{0});
+        CHECK_EQ(received, 1);
+
+        sub.unsubscribe();
+
+        app.eventBus().emit(TestEvent{0});
+        CHECK_EQ(received, 1);
+    }
+
+    void testEventBusRAIIScopeEnd()
+    {
+        Application app;
+
+        app.createEvent<TestEvent>("TestEvent");
+
+        auto& world = app.createContainer<Container>("world");
+
+        int received = 0;
+
+        {
+            auto sub = world.subscribe<TestEvent>(
+                [&](const TestEvent&) { ++received; }
+            );
+
+            app.eventBus().emit(TestEvent{0});
+            CHECK_EQ(received, 1);
+        }
+
+        app.eventBus().emit(TestEvent{0});
+        CHECK_EQ(received, 1);
+    }
+
+    void testEventBusMoveTransfersSubscription()
+    {
+        Application app;
+
+        app.createEvent<TestEvent>("TestEvent");
+
+        auto& world = app.createContainer<Container>("world");
+
+        int received = 0;
+
+        auto sub = world.subscribe<TestEvent>(
+            [&](const TestEvent&) { ++received; }
+        );
+
+        auto moved = std::move(sub);
+
+        CHECK(!sub.valid());
+        CHECK(moved.valid());
+
+        app.eventBus().emit(TestEvent{0});
+        CHECK_EQ(received, 1);
+
+        moved.unsubscribe();
+
+        app.eventBus().emit(TestEvent{0});
+        CHECK_EQ(received, 1);
+    }
+
+    void testEventBusTypedIsolation()
+    {
+        Application app;
+
+        app.createEvent<TestEvent>("TestEvent");
+        app.createEvent<OtherEvent>("OtherEvent");
+
+        auto& world = app.createContainer<Container>("world");
+
+        int testHits = 0;
+
+        auto sub = world.subscribe<TestEvent>(
+            [&](const TestEvent&) { ++testHits; }
+        );
+
+        app.eventBus().emit(OtherEvent{99});
+        CHECK_EQ(testHits, 0);
+
+        app.eventBus().emit(TestEvent{1});
+        CHECK_EQ(testHits, 1);
+    }
+
+    void testEventBusDuplicateRegistrationRejected()
+    {
+        Application app;
+
+        app.createEvent<TestEvent>("TestEvent");
+
+        bool threw = false;
+
+        try
+        {
+            app.createEvent<TestEvent>("TestEvent again");
+        }
+        catch (const std::exception&)
+        {
+            threw = true;
+        }
+
+        CHECK(threw);
+    }
+
+    void testEventBusEmitBeforeSubscribeIsNoop()
+    {
+        Application app;
+
+        app.createEvent<TestEvent>("TestEvent");
+
+        // Registered but unsubscribed -> nothing to notify, no error.
+        app.eventBus().emit(TestEvent{5});
+
+        // Emitting an unregistered type is also fire-and-forget.
+        app.eventBus().emit(OtherEvent{5});
+    }
+
+    void testEventBusHandleEmitAndEnumeration()
+    {
+        Application app;
+
+        app.createEvent<EventModuleProbe>("EventModuleProbe");
+
+        const auto& events = app.eventBus().events();
+
+        CHECK_EQ(events.size(), std::size_t{1});
+        CHECK_EQ(events[0].name, std::string{"EventModuleProbe"});
+
+        auto& world = app.createContainer<Container>("world");
+
+        bool fired = false;
+
+        auto sub = world.subscribe<EventModuleProbe>(
+            [&](const EventModuleProbe&) { fired = true; }
+        );
+
+        // Inspector-style type-erased emit, default-constructing the payload.
+        app.eventBus().emit(events[0].handle);
+        CHECK(fired);
+    }
+
+    void testEventBusClearInvalidatesRegistrations()
+    {
+        Application app;
+
+        app.createEvent<TestEvent>("TestEvent");
+
+        auto& world = app.createContainer<Container>("world");
+
+        int received = 0;
+
+        auto sub = world.subscribe<TestEvent>(
+            [&](const TestEvent& e) { received += e.value; }
+        );
+
+        app.eventBus().clear();
+
+        app.eventBus().emit(TestEvent{5});
+        CHECK_EQ(received, 0);
+
+        CHECK(app.eventBus().events().empty());
+
+        // A surviving handle unsubscribes safely once the bus is cleared.
+        sub.unsubscribe();
+        CHECK(!sub.valid());
+    }
+
+    void testEventBusUnsubscribesOnContainerTeardown()
+    {
+        Application app;
+
+        app.createEvent<EventModuleProbe>("EventModuleProbe");
+
+        int received = 0;
+
+        auto& world = app.createContainer<Container>("world");
+        auto& module = world.addModule<EventSubscriberModule>();
+
+        module.subscription =
+            module.eventBus().subscribe<EventModuleProbe>(
+                world,
+                [&](const EventModuleProbe&) { ++received; }
+            );
+
+        app.eventBus().emit(EventModuleProbe{});
+        CHECK_EQ(received, 1);
+
+        // Teardown destroys the container, whose module's RAII Subscription
+        // auto-unsubscribes, so a handler borrowing module state can no longer
+        // fire afterwards.
+        app.unloadGame();
+
+        app.eventBus().emit(EventModuleProbe{});
+        CHECK_EQ(received, 1);
+    }
+
+    void testApplicationUnloadClearsEventBus()
+    {
+        Application app;
+
+        app.createEvent<TestEvent>("TestEvent");
+
+        auto& world = app.createContainer<Container>("world");
+
+        int received = 0;
+
+        auto sub = world.subscribe<TestEvent>(
+            [&](const TestEvent& e) { received += e.value; }
+        );
+
+        app.eventBus().emit(TestEvent{7});
+        CHECK_EQ(received, 7);
+        CHECK_EQ(app.eventBus().events().size(), std::size_t{1});
+
+        // The event triggers live in the game library, so unloadGame() must
+        // drop them before lavac calls dlclose().
+        app.unloadGame();
+
+        CHECK(app.eventBus().events().empty());
+
+        app.eventBus().emit(TestEvent{3});
+        CHECK_EQ(received, 7);
+
+        sub.unsubscribe();
+        CHECK(!sub.valid());
+    }
+
     struct TestCase
     {
         const char* name;
@@ -799,6 +1338,8 @@ namespace
         {"Resource iteration", testAllIteration},
         {"Container resource import", testContainerImportResource},
         {"Container module move", testContainerMoveRepointsModules},
+        {"Container interface", testContainerInterface},
+        {"Container interface move", testContainerMoveRepointsInterface},
         {"Exposed variables", testExposedBoxes},
         {"Teardown ordering", testTeardownHooksRunBeforeDestruction},
         {"Default container unload", testDefaultContainerOnUnload},
@@ -812,6 +1353,24 @@ namespace
         {"Scheduler re-entrant destroy", testSchedulerReentrantDestroy},
         {"Scheduler exit exactly once", testSchedulerExitExactlyOnce},
         {"Scheduler exitAll drains", testSchedulerExitAllDrainsCreatedDuringExit},
+        {"Application step completes job", testApplicationStepCompletesJob},
+        {"Application run requestExit", testApplicationRunStopsOnRequestExit},
+        {"Application run picks up new jobs", testApplicationRunPicksUpJobsCreatedDuringExecute},
+        {"Application empty scheduler", testApplicationEmptySchedulerIsDone},
+        {"Application frame rate limit", testApplicationFrameRateLimit},
+        {"EventBus register/subscribe/emit", testEventBusRegisterSubscribeEmit},
+        {"EventBus requires registration", testEventBusRequiresRegistrationBeforeSubscribe},
+        {"EventBus single subscriber", testEventBusSingleSubscriberOnly},
+        {"EventBus unsubscribe stops delivery", testEventBusUnsubscribeStopsDelivery},
+        {"EventBus RAII scope end", testEventBusRAIIScopeEnd},
+        {"EventBus move transfers subscription", testEventBusMoveTransfersSubscription},
+        {"EventBus typed isolation", testEventBusTypedIsolation},
+        {"EventBus duplicate registration", testEventBusDuplicateRegistrationRejected},
+        {"EventBus emit-before-subscribe noop", testEventBusEmitBeforeSubscribeIsNoop},
+        {"EventBus handle emit + enumeration", testEventBusHandleEmitAndEnumeration},
+        {"EventBus clear invalidates", testEventBusClearInvalidatesRegistrations},
+        {"EventBus teardown unsubscribes", testEventBusUnsubscribesOnContainerTeardown},
+        {"Application unload clears EventBus", testApplicationUnloadClearsEventBus},
     };
 
     void printSeparator()

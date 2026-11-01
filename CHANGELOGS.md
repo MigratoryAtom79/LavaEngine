@@ -6,6 +6,17 @@
 >
 > This file contains all notable changes to LavaEngine are documented here.
 
+## [0.9.0-indev] - 1/11/26
+
+### Added:
+* Added Events
+* Added Interfaces
+
+### Fixed:
+* Logger accessors are thread-safe. (ID7)
+* Window is now non=copyable and immovable to prevent destructor from calling `glfwTerminate()`. (ID8)
+* Application::run()`/`step()` wint busy-spin. (ID10)
+
 ## [0.8.2-indev] - 19/09/26
 
 ### Fixed:

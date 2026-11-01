@@ -1,8 +1,11 @@
 #pragma once
 
+#include <chrono>
 #include <dlfcn.h>
+#include <functional>
 #include <iostream>
 #include <thread>
+#include <utility>
 
 #include "LavaEngine/Application.hpp"
 
@@ -15,8 +18,9 @@ using EngineFunction = void (*)(LavaEngine::Application&);
  * @note Ownership: UserGame owns the `Application` (m_engine, by value),
  * the dlopen'd library handle, and the runtime copy of the game file. On
  * reload/unload it tears the Application session down (unloadGame) before
- * dlclosing the library. Borrowers of the Application (e.g. Inspector) must
- * re-resolve their pointers after a reload, since the framework is reset.
+ * dlclosing the library. Borrowers of the Application can use setReloadHooks()
+ * to release references before teardown and re-resolve them after the new
+ * session loads; the Inspector uses this to detach and rebind automatically.
  * @example
  * @code
  * UserGame game("MyGame.so");
@@ -39,6 +43,27 @@ public:
     ~UserGame()
     {
         unload();
+    }
+
+    /**
+     * @brief Installs callbacks around session reload and teardown.
+     * @param before Called while the current framework is still alive.
+     * @param after Called after the replacement library has loaded.
+     * @note Single observer; the Inspector uses this to detach and rebind.
+     */
+    void setReloadHooks(
+        std::function<void()> before,
+        std::function<void()> after
+    )
+    {
+        m_beforeReload = std::move(before);
+        m_afterReload = std::move(after);
+    }
+
+    void clearReloadHooks()
+    {
+        m_beforeReload = nullptr;
+        m_afterReload = nullptr;
     }
 
     void loadLibrary()
@@ -108,6 +133,9 @@ public:
     {
         std::cerr << "[LAVAC] Reloading...\n";
 
+        if (m_beforeReload)
+            m_beforeReload();
+
         m_engine.unloadGame();
 
         dlclose(m_library);
@@ -118,6 +146,9 @@ public:
         loadLibrary();
 
         load();
+
+        if (m_afterReload)
+            m_afterReload();
 
         m_lastWriteTime =
             std::filesystem::last_write_time(m_libraryPath);
@@ -187,7 +218,16 @@ public:
 
     void run()
     {
-        while (!step());
+        while (true)
+        {
+            const auto frameStart =
+                std::chrono::steady_clock::now();
+
+            if (step())
+                break;
+
+            m_engine.waitForNextFrame(frameStart);
+        }
     }
 
     int step()
@@ -210,6 +250,9 @@ public:
         if (!m_library)
             return;
 
+        if (m_beforeReload)
+            m_beforeReload();
+
         m_engine.unloadGame();
 
         dlclose(m_library);
@@ -225,6 +268,9 @@ public:
 
 private:
     LavaEngine::Application m_engine;
+
+    std::function<void()> m_beforeReload;
+    std::function<void()> m_afterReload;
 
     void* m_library = nullptr;
 

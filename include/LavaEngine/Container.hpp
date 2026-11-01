@@ -1,14 +1,19 @@
 #pragma once
 
 #include <memory>
+#include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 
+#include "EventBus.hpp"
+#include "Interface.hpp"
 #include "Module.hpp"
 #include "Resource.hpp"
 
 namespace LavaEngine
 {
+    class Application;
 
     enum class VarType
     {
@@ -37,16 +42,17 @@ namespace LavaEngine
 
 
     /**
-     * @brief Logical grouping unit: owns modules, resources and exposed variables.
+     * @brief Logical grouping unit: owns modules, resources, one interface and exposed variables.
      * @detail A Container is created on an Application via
      * createContainer<T>() and hosts Modules (ModuleRegistry), Resources
-     * (ResourceRegistry) and inspector-exposed variables. Modules can reach
-     * the owning Container through Module::getContainer().
+     * (ResourceRegistry), an optional typed Interface, and inspector-exposed
+     * variables. Modules can reach the owning Container through
+     * Module::getContainer(); an Interface can reach it through Interface::owner().
      * @note Ownership: A Container is uniquely owned by the Application
      * that created it (std::unique_ptr in Application::m_containers). It
-     * owns its modules, resources and variables and destroys them during
-     * teardown. Any Module/Resource reference obtained from it is invalid
-     * once the Container is destroyed.
+     * owns its modules, resources, interface and variables and destroys them
+     * during teardown. Any reference obtained from it is invalid once the
+     * Container is destroyed or the session is unloaded.
      * @example
      * @code
      * auto& world = app.createContainer<Container>("world");
@@ -66,6 +72,7 @@ namespace LavaEngine
 
         virtual ~Container()
         {
+            removeInterface();
             m_modules.clear();
             m_resources.clear();
         }
@@ -106,6 +113,118 @@ namespace LavaEngine
         void removeModule()
         {
             m_modules.remove<T>();
+        }
+
+
+        /**
+         * @brief Creates and owns this Container's interface.
+         * @param args Forwarded to the implementation constructor.
+         * @return A reference to the interface as its public type I.
+         * @throws std::runtime_error if an interface already exists.
+         * @example
+         * @code
+         * auto& editor = world.addInterface<IWorldEditor, WorldEditor>();
+         * @endcode
+         */
+        template <typename I, typename Impl = I, typename... Args>
+        I& addInterface(Args&&... args)
+        {
+            static_assert(
+                std::is_base_of_v<Interface, I>,
+                "Interface type must derive from Interface"
+            );
+            static_assert(
+                std::is_base_of_v<I, Impl>,
+                "Implementation must derive from the interface type"
+            );
+            static_assert(
+                !std::is_abstract_v<Impl>,
+                "Interface implementation must be concrete"
+            );
+
+            if (m_interface)
+            {
+                throw std::runtime_error(
+                    "Container already has an interface"
+                );
+            }
+
+            auto interface = std::make_unique<Impl>(
+                std::forward<Args>(args)...
+            );
+
+            Interface* base = interface.get();
+            I* result = interface.get();
+
+            base->setOwner(this);
+            m_interface = std::move(interface);
+
+            return *result;
+        }
+
+
+        /**
+         * @brief Returns this Container's interface viewed as I, or null.
+         */
+        template <typename I>
+        I* getInterface()
+        {
+            static_assert(
+                std::is_base_of_v<Interface, I>,
+                "Interface type must derive from Interface"
+            );
+
+            return dynamic_cast<I*>(m_interface.get());
+        }
+
+
+        template <typename I>
+        const I* getInterface() const
+        {
+            static_assert(
+                std::is_base_of_v<Interface, I>,
+                "Interface type must derive from Interface"
+            );
+
+            return dynamic_cast<const I*>(m_interface.get());
+        }
+
+
+        template <typename I>
+        bool hasInterface() const
+        {
+            return getInterface<I>() != nullptr;
+        }
+
+
+        /**
+         * @brief Destroys this Container's interface, if any.
+         */
+        void removeInterface()
+        {
+            if (!m_interface)
+                return;
+
+            m_interface->setOwner(nullptr);
+            m_interface.reset();
+        }
+
+
+        /**
+         * @brief Raw interface access for tooling; gameplay should use
+         * getInterface<I>().
+         */
+        [[nodiscard]]
+        Interface* interface()
+        {
+            return m_interface.get();
+        }
+
+
+        [[nodiscard]]
+        const Interface* interface() const
+        {
+            return m_interface.get();
         }
 
 
@@ -218,6 +337,44 @@ namespace LavaEngine
         void expose(const std::string& name, double* variable);
         void expose(const std::string& name, std::string* variable);
 
+        /**
+         * @brief Registers `handler` as this container's subscription to Event.
+         * @param handler Callable invoked with `const Event&` on every emit.
+         * @return The EventBus::Subscription RAII handle owning the slot.
+         * @throws std::runtime_error if the event was not created first, or if
+         * another container already subscribed to it (one subscriber only).
+         * @example
+         * @code
+         * auto sub = ui.subscribe<PlayerDied>(
+         *     [&](const PlayerDied& e) { scoreboard.remove(e.id); });
+         * @endcode
+         */
+        template <typename Event, typename Handler>
+        EventBus::Subscription subscribe(Handler handler)
+        {
+            return eventBus().subscribe<Event>(*this, std::move(handler));
+        }
+
+        /**
+         * @brief The Application-wide event bus this container can emit on and
+         * subscribe to.
+         * @throws std::logic_error if the container was not created via
+         * Application::createContainer(), so it holds no bus back-pointer.
+         */
+        [[nodiscard]]
+        EventBus& eventBus() const
+        {
+            if (!m_eventBus)
+            {
+                throw std::logic_error(
+                    "Container::eventBus(): container is not owned by an "
+                    "Application (create it via createContainer())"
+                );
+            }
+
+            return *m_eventBus;
+        }
+
         [[nodiscard]]
         std::vector<Variable>& variables()
         {
@@ -226,6 +383,13 @@ namespace LavaEngine
 
 
     private:
+        friend class Application;
+
+        void setEventBus(EventBus* bus)
+        {
+            m_eventBus = bus;
+        }
+
         // Owns the boxed copy behind each exposed Variable. Heap-allocated
         // so the address the Variable::ptr points into stays stable even if
         // m_variables reallocates.
@@ -242,7 +406,9 @@ namespace LavaEngine
 
         ModuleRegistry m_modules;
         ResourceRegistry m_resources;
+        EventBus* m_eventBus = nullptr;
         std::vector<Variable> m_variables;
         std::vector<std::unique_ptr<ExposedBox>> m_boxes;
+        std::unique_ptr<Interface> m_interface;
     };
 }

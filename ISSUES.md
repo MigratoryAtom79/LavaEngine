@@ -246,7 +246,7 @@ These are concrete instances of the lifetime hazards ID1 calls out:
 
 ---
 
-## [ ] ID7 - Logger accessors are not thread-safe
+## [x] ID7 - Logger accessors are not thread-safe
 
 **Priority:** P1  
 **Area:** Logger
@@ -258,9 +258,22 @@ These are concrete instances of the lifetime hazards ID1 calls out:
 - Take the mutex in every accessor (or make the hot fields `std::atomic`).
 - Document that the redirected output stream must outlive the `Logger`.
 
+### Resolution (unreleased)
+
+- `setLevel`, `level`, `setConsoleEnabled`, `setFileEnabled`, and `setOutput`
+  now take `m_mutex`, so every read/write of the shared configuration fields
+  is synchronized with `log()`.
+- `log()` now reads `m_level` while holding the lock instead of before taking
+  it, closing the remaining race on the level check.
+- The existing note that a stream passed to `setOutput()` must outlive the
+  `Logger` still applies: locking protects the pointer, not the stream's
+  lifetime.
+- Verified with a TSan-instrumented logging/configuration stress test (no
+  reports).
+
 ---
 
-## [ ] ID8 - `Window::~Window` calls `glfwTerminate()` unconditionally
+## [x] ID8 - `Window::~Window` calls `glfwTerminate()` unconditionally
 
 **Priority:** P2  
 **Area:** Window / GLFW lifecycle
@@ -272,6 +285,19 @@ Note: `VulkanRenderer` owns a `Window` by value, and LavaVK examples also call `
 ### Suggested fixes
 
 - Reference-count `glfwInit`/`glfwTerminate` (e.g. a RAII `GlfwScope` shared by all windows), and only terminate when the last window is destroyed.
+
+### Resolution (unreleased)
+
+- `Window` is now explicitly **non-copyable and non-movable**; its move
+  constructor/assignment declarations and definitions were removed. A
+  moved-from `Window` can no longer outlive and terminate a live window.
+- The library contract is now explicit: exactly one `Window` may exist per
+  process, and `~Window` intentionally owns process-wide GLFW termination.
+  Multiple windows are unsupported by design.
+- Residual caveat: `Application::setFramework()` still constructs the new
+  framework/window before destroying the old one, so a *live* framework must
+  not be replaced without tearing the session down first (`unloadGame()`).
+  That replacement path is outside the supported one-window lifecycle.
 
 ---
 
@@ -289,7 +315,7 @@ Note: `VulkanRenderer` owns a `Window` by value, and LavaVK examples also call `
 
 ---
 
-## [ ] ID10 - `Application::run()`/`step()` busy-spin and can never terminate
+## [x] ID10 - `Application::run()`/`step()` busy-spin and can never terminate
 
 **Priority:** P1  
 **Area:** Application / Scheduler
@@ -305,3 +331,60 @@ Note: `VulkanRenderer` owns a `Window` by value, and LavaVK examples also call `
 - `run()` should have a deterministic termination contract (e.g. a job explicitly cancels/returns "done").
 - Long-running jobs should yield (frame structure) rather than busy-spin.
 - Newly created jobs during execution should be handled explicitly (see ID3).
+
+### Resolution (unreleased)
+
+- `Application` now exposes `requestExit()`/`exitRequested()`; `run()` stops
+  when the scheduler finishes or exit is requested. `step()` returns `1` on
+  the pass that completes the last job or observes an exit request.
+- `run()` is paced at `frameRateLimit()` (60 FPS by default;
+  `setFrameRateLimit(0)` disables pacing). `UserGame::run()` and
+  `Inspector::inspect()` use the same `waitForNextFrame()` helper.
+- Jobs created during `execute()` are still deferred by `Scheduler`; `run()`
+  re-checks `done()` after each pass, so new jobs keep the loop alive until
+  they finish or `requestExit()` is called.
+- Empty schedulers remain "done" for `Application::run()`/`step()`. The
+  Inspector now polls GLFW and stops only on real job completion, exit request,
+  or window close, so a game with no jobs can still be inspected.
+- `unloadGame()` clears the exit request so a hot-reloaded session can run
+  again.
+- Covered by `testApplicationStepCompletesJob`,
+  `testApplicationRunStopsOnRequestExit`,
+  `testApplicationRunPicksUpJobsCreatedDuringExecute`,
+  `testApplicationEmptySchedulerIsDone`, and
+  `testApplicationFrameRateLimit`.
+
+---
+
+## [x] ID11 - Hot reload leaves Inspector and EventBus pointing at unloaded code
+
+**Priority:** P1  
+**Area:** lavac / Inspector / EventBus
+
+`UserGame::reload()` tears down the framework before `dlclose()`, but the
+`Inspector` caches `VulkanRenderer*` and ImGui/Vulkan resources from the old
+device. Nothing detached it before teardown, and `detach()` did not reset
+`m_imguiPool`, so `lavac inspect` could dereference destroyed state or recreate
+resources on the old device.
+
+`Application::unloadGame()` also left `EventBus` intact. Registered `trigger`
+callbacks were compiled into the game `.so`; after `dlclose()` they pointed at
+unloaded code. The example worked around duplicate registration with a
+`try/catch`, but the stale trigger remained callable.
+
+### Resolution (unreleased)
+
+- `Application::unloadGame()` clears the EventBus after scheduler jobs are
+  destroyed and before containers/the framework are destroyed. Event
+  registrations are now session-scoped; `lavaEngineMain` re-registers them
+  after each load.
+- `UserGame` exposes `setReloadHooks()`/`clearReloadHooks()`. `reload()` runs
+  the before hook while the old framework is alive, then the after hook once
+  the replacement library has loaded. `unload()` also runs the before hook.
+- `Inspector` registers detach/rebind hooks, resets `m_imguiPool` and stale
+  history state during detach, and safely stops if no renderer is available
+  after a failed reload.
+- Updated the sample event registration, README teardown order, and EventBus
+  lifecycle documentation.
+- Covered by `testApplicationUnloadClearsEventBus`; GUI reload remains a
+  manual verification.

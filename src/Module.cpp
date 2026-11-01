@@ -6,10 +6,16 @@
 #include <vector>
 
 #include "../include/LavaEngine/Module.hpp"
+#include "../include/LavaEngine/Container.hpp"
 
 namespace LavaEngine
 {
     class Module;
+
+    EventBus& Module::eventBus() const
+    {
+        return getContainer().eventBus();
+    }
 
     ModuleRegistry::ModuleRegistry(
         ModuleRegistry&& other

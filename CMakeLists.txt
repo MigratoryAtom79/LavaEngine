@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(LavaEngine
-        VERSION 0.5.0
+        VERSION 0.8.0
         LANGUAGES CXX
 )
 
@@ -70,6 +70,8 @@ add_library(LavaEngine SHARED
         include/LavaEngine/Scheduler.hpp
         src/Scheduler.cpp
 
+        include/LavaEngine/EventBus.hpp
+
         include/LavaEngine/Framework.hpp
 
         include/LavaEngine/Frameworks.hpp
@@ -90,14 +92,15 @@ add_library(LavaEngine SHARED
         ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
         include/LavaEngine/InputHandler.hpp
         src/InputHandler.cpp
+        include/LavaEngine/Interface.hpp
 )
 
 target_include_directories(LavaEngine
         PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${IMGUI_DIR}
 
         PRIVATE
-        ${IMGUI_DIR}
         ${IMGUI_DIR}/backends
 )
 

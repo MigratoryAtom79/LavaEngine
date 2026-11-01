@@ -1,4 +1,4 @@
-# LavaEngine [0.8.2-indev]
+# LavaEngine [0.9.0-indev]
 
 **LavaEngine** is a modular C++ game framework designed to provide the infrastructure needed to build games and interactive applications without imposing a predefined engine architecture.
 
@@ -131,6 +131,41 @@ The Editor does not need to know how the World is internally implemented.
 It only needs to know what the `WorldEditorInterface` provides.
 
 This creates a clear boundary between systems and prevents Containers from becoming tightly coupled to each other's implementations.
+
+A Container owns at most one typed interface:
+
+```c++
+struct IWorldEditor : Interface
+{
+    virtual Entity spawn(const SpawnDesc&) = 0;
+};
+
+class WorldEditor final : public IWorldEditor
+{
+public:
+    Entity spawn(const SpawnDesc& desc) override
+    {
+        return owner().createResource<EntityResource>(desc);
+    }
+};
+
+world.addInterface<IWorldEditor, WorldEditor>();
+
+auto* editor = world.getInterface<IWorldEditor>();
+
+if (editor)
+    editor->spawn(desc);
+```
+
+Resolve interfaces through a Container reference; there is no app-wide
+`findInterface<T>()`. Interfaces are non-owning behavior facades over the owning
+Container, invalid after that Container is destroyed or the session is
+unloaded. Use `owner()` to reach modules/resources. Do not use
+`Container::variables()` as live game state: exposed variables are Inspector
+copies, not aliases to module data.
+
+Override `Interface::imgui()` to draw interface-specific controls in the
+Inspector's Containers panel.
 
 ### Events
 
@@ -435,6 +470,11 @@ Run all job with:
 engine.run();
 ```
 
+`run()` is paced at 60 FPS by default. Call `setFrameRateLimit(0)` to disable
+pacing, or `requestExit()` to stop a job that would otherwise repeat forever.
+`step()` advances a single pass and does not pace; use `waitForNextFrame()` when
+driving your own loop.
+
 ---
 
 ## Application Teardown
@@ -452,8 +492,11 @@ reload) tears the session down in a fixed, deterministic order:
    offscreen target).
 3. **Scheduler** — all jobs are destroyed before the objects they may
    borrow from.
-4. **Containers** — destroyed (Modules, then Resources and exposed boxes).
-5. **Framework** — destroyed last.
+4. **EventBus** — all event registrations, triggers and subscriptions are
+   cleared before the game library that defined them is unloaded. Event
+   handles do not survive a reload.
+5. **Containers** — destroyed (Modules, then Resources and exposed boxes).
+6. **Framework** — destroyed last.
 
 ### Ownership model
 
@@ -482,8 +525,10 @@ struct CleanupModule : Module
 
 Hot reload (`lavac`) calls `unloadGame()` before loading the new library, so
 the whole session (except the `Application` object and its `Logger`) is
-rebuilt. Objects borrowed across a reload — e.g. an `Inspector` attached to
-a `VulkanRenderer` — must be detached/rebound afterwards.
+rebuilt. The EventBus is session-scoped: `lavaEngineMain` must register its
+events again after every load. `lavac inspect` handles the Inspector lifecycle
+automatically — it detaches before teardown and rebinds to the new
+`VulkanRenderer` after the library loads.
 
 ---
 

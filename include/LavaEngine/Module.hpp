@@ -11,6 +11,7 @@
 namespace LavaEngine
 {
     class Container;
+    class EventBus;
 
     /**
      * @brief Base class for all gameplay/engine logic hosted by a Container.
@@ -44,6 +45,13 @@ namespace LavaEngine
         {
             return *m_container;
         }
+
+        /**
+         * @brief The Application-wide event bus, via the owning Container.
+         * @throws std::logic_error if the owning Container was not created via
+         * Application::createContainer().
+         */
+        [[nodiscard]] EventBus& eventBus() const;
 
         // Teardown hook: called by the owning Container during
         // Application::unloadGame() while the framework is still alive,

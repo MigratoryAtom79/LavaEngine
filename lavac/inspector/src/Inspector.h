@@ -53,11 +53,36 @@ namespace LavaEngine
         explicit Inspector(UserGame& application)
             : m_application(application)
         {
-            initialize();
+            try
+            {
+                initialize();
+            }
+            catch (...)
+            {
+                detach();
+                throw;
+            }
+
+            m_application.setReloadHooks(
+                [this] { detach(); },
+                [this]
+                {
+                    try
+                    {
+                        initialize();
+                    }
+                    catch (...)
+                    {
+                        detach();
+                        throw;
+                    }
+                }
+            );
         }
 
         ~Inspector()
         {
+            m_application.clearReloadHooks();
             shutdown();
         }
 
@@ -70,6 +95,23 @@ namespace LavaEngine
 
             while (true)
             {
+                if (!vulkan)
+                {
+                    std::fprintf(
+                        stderr,
+                        "Inspector: no renderer after reload; stopping.\n"
+                    );
+                    break;
+                }
+
+                const Clock::time_point frameStart =
+                    Clock::now();
+
+                glfwPollEvents();
+
+                if (vulkan->window().shouldClose())
+                    break;
+
                 sampleFrameTime();
 
                 beginFrame();
@@ -78,20 +120,33 @@ namespace LavaEngine
 
                 ImGui::Render();
 
-                if (m_application.step())
-                    break;
+                if (!paused)
+                {
+                    const int stepResult =
+                        m_application.step();
+
+                    const bool hasJobs =
+                        m_scheduler &&
+                        m_scheduler->jobCount() > 0;
+
+                    if (stepResult &&
+                        (hasJobs ||
+                         m_application.application().exitRequested()))
+                    {
+                        break;
+                    }
+                }
+
+                m_application.application().waitForNextFrame(
+                    frameStart
+                );
             }
         }
 
         // Uninstalls from the renderer and shuts down the ImGui backends.
-        // Idempotent; safe to call before a UserGame reload or teardown.
-        // After a reload the backends must be re-initialized via a new
-        // Inspector, so callers should not reuse this object afterwards.
+        // Idempotent; reload hooks use it before the old framework is destroyed.
         void detach()
         {
-            if (!ImGui::GetCurrentContext())
-                return;
-
             // Wait for GPU work before destroying ImGui's Vulkan objects.
             if (vulkan)
             {
@@ -104,11 +159,18 @@ namespace LavaEngine
                 vulkan->clearOverlayCallback();
             }
 
-            ImGui_ImplVulkan_Shutdown();
+            if (ImGui::GetCurrentContext())
+            {
+                ImGui_ImplVulkan_Shutdown();
 
-            ImGui_ImplGlfw_Shutdown();
+                ImGui_ImplGlfw_Shutdown();
 
-            ImGui::DestroyContext();
+                ImGui::DestroyContext();
+            }
+
+            // The descriptor pool belongs to the old device and must die
+            // before unloadGame() resets the framework.
+            m_imguiPool.reset();
 
             vulkan = nullptr;
         }
@@ -126,6 +188,13 @@ namespace LavaEngine
                     "Inspector requires VulkanRenderer"
                 );
             }
+
+            m_frameTimesMs.fill(0.0f);
+            m_frameTimeCursor = 0;
+            m_frameTimeSamples = 0;
+            m_jobHistoryMs.clear();
+            m_jobHistoryCursor.clear();
+            m_jobHistorySamples = 0;
 
             IMGUI_CHECKVERSION();
 
@@ -499,6 +568,7 @@ namespace LavaEngine
             {
                 JobID id;
                 float ms;
+                const std::string& name;
             };
 
             std::vector<Segment> segments;
@@ -507,7 +577,7 @@ namespace LavaEngine
             for (const Job& job : jobs)
             {
                 const float ms = static_cast<float>(job.duration.count()) / 1000.0f;
-                segments.push_back({job.id, ms});
+                segments.push_back({job.id, ms, job.name});
                 jobsTotalMs += ms;
             }
 
@@ -534,7 +604,7 @@ namespace LavaEngine
             {
                 float x = barPos.x;
 
-                auto drawSegment = [&](float ms, ImU32 color, JobID id, bool isSystem)
+                auto drawSegment = [&](float ms, ImU32 color, const std::string& name, bool isSystem)
                 {
                     const float w = (ms / totalMs) * barWidth;
 
@@ -552,7 +622,7 @@ namespace LavaEngine
                         }
                         else
                         {
-                            ImGui::SetTooltip("Job #%u - %.3f ms", id, ms);
+                            ImGui::SetTooltip("Job %s - %.3f ms", name.c_str(), ms);
                         }
                     }
 
@@ -560,9 +630,9 @@ namespace LavaEngine
                 };
 
                 for (const Segment& seg : segments)
-                    drawSegment(seg.ms, colorForJobID(seg.id), seg.id, false);
+                    drawSegment(seg.ms, colorForJobID(seg.id), seg.name, false);
 
-                drawSegment(systemMs, systemColor, 0, true);
+                drawSegment(systemMs, systemColor, "System", true);
             }
 
             // --- History line chart (same job set, same colors) ---
@@ -628,7 +698,7 @@ namespace LavaEngine
                     ImVec2(12, 12)
                 );
                 ImGui::SameLine();
-                ImGui::Text("Job #%u - %.3f ms", seg.id, seg.ms);
+                ImGui::Text("Job %s - %.3f ms", seg.name.c_str(), seg.ms);
             }
 
             ImGui::ColorButton(
@@ -669,78 +739,134 @@ namespace LavaEngine
 
         void drawContainersPanel()
         {
-            if (ImGui::Begin("Containers"))
+            if (ImGui::Begin("Containers & Events"))
             {
-                const auto& containers =
+                if (ImGui::TreeNodeEx("Containers")){
+                    const auto& containers =
                     m_application.application().containers();
 
-                if (containers.empty())
-                {
-                    ImGui::TextDisabled("No containers.");
-                }
-
-                for (const auto& containerPtr : containers)
-                {
-                    Container* container = containerPtr.get();
-
-                    ImGui::PushID(container);
-
-                    const std::string& name = container->name();
-
-                    const bool open = ImGui::TreeNodeEx(
-                        name.empty() ? "(unnamed container)" : name.c_str(),
-                        ImGuiTreeNodeFlags_DefaultOpen
-                    );
-
-                    if (open)
+                    if (containers.empty())
                     {
-                        drawModulesNode(container->modules());
-                        drawResourcesNode(container->resources());
-                        if (ImGui::TreeNodeEx("Variables"))
-                        {
-                            if (container->variables().empty()) ImGui::Text("(no exposed variables)");
-                            for (const Variable& variable : container->variables())
-                            {
-                                if (variable.type == VarType::Bool) ImGui::Checkbox(
-                                    variable.name.c_str(), static_cast<bool*>(variable.ptr));
-                                if (variable.type == VarType::Int) ImGui::InputInt(
-                                    variable.name.c_str(), static_cast<int*>(variable.ptr));
-                                if (variable.type == VarType::Float) ImGui::InputFloat(
-                                    variable.name.c_str(), static_cast<float*>(variable.ptr));
-                                if (variable.type == VarType::Double) ImGui::InputDouble(
-                                    variable.name.c_str(), static_cast<double*>(variable.ptr));
-                                if (variable.type == VarType::String)
-                                {
-                                    char buffer[256];
-                                    buffer[0] = '\0';
-                                    strncpy(
-                                        buffer,
-                                        static_cast<std::string*>(variable.ptr)->c_str(),
-                                        sizeof(buffer) - 1
-                                    );
-                                    buffer[sizeof(buffer) - 1] = '\0';
+                        ImGui::TextDisabled("No containers.");
+                    }
 
-                                    if (ImGui::InputText(
-                                        variable.name.c_str(),
-                                        buffer,
-                                        sizeof(buffer)
-                                    ))
+                    for (const auto& containerPtr : containers)
+                    {
+                        Container* container = containerPtr.get();
+
+                        ImGui::PushID(container);
+
+                        const std::string& name = container->name();
+
+                        const bool open = ImGui::TreeNodeEx(
+                            name.empty() ? "(unnamed container)" : name.c_str(),
+                            ImGuiTreeNodeFlags_DefaultOpen
+                        );
+
+                        if (open)
+                        {
+                            drawModulesNode(container->modules());
+                            drawResourcesNode(container->resources());
+
+                            if (container->interface())
+                                drawInterfaceNode(*container->interface());
+
+                            if (ImGui::TreeNodeEx("Variables"))
+                            {
+                                if (container->variables().empty()) ImGui::Text("(no exposed variables)");
+                                for (const Variable& variable : container->variables())
+                                {
+                                    if (variable.type == VarType::Bool) ImGui::Checkbox(
+                                        variable.name.c_str(), static_cast<bool*>(variable.ptr));
+                                    if (variable.type == VarType::Int) ImGui::InputInt(
+                                        variable.name.c_str(), static_cast<int*>(variable.ptr));
+                                    if (variable.type == VarType::Float) ImGui::InputFloat(
+                                        variable.name.c_str(), static_cast<float*>(variable.ptr));
+                                    if (variable.type == VarType::Double) ImGui::InputDouble(
+                                        variable.name.c_str(), static_cast<double*>(variable.ptr));
+                                    if (variable.type == VarType::String)
                                     {
-                                        *static_cast<std::string*>(variable.ptr) = buffer;
+                                        char buffer[256];
+                                        buffer[0] = '\0';
+                                        strncpy(
+                                            buffer,
+                                            static_cast<std::string*>(variable.ptr)->c_str(),
+                                            sizeof(buffer) - 1
+                                        );
+                                        buffer[sizeof(buffer) - 1] = '\0';
+
+                                        if (ImGui::InputText(
+                                            variable.name.c_str(),
+                                            buffer,
+                                            sizeof(buffer)
+                                        ))
+                                        {
+                                            *static_cast<std::string*>(variable.ptr) = buffer;
+                                        }
                                     }
                                 }
+
+                                ImGui::TreePop();
                             }
+
+                            container->imgui();
 
                             ImGui::TreePop();
                         }
 
-                        container->imgui();
+                        ImGui::PopID();
+                    }
+                    ImGui::TreePop();
+                }
+            }
+            if (ImGui::TreeNodeEx("Events"))
+            {
+                EventBus& bus = m_application.application().eventBus();
+                const auto& events = bus.events();
 
-                        ImGui::TreePop();
+                if (events.empty())
+                {
+                    ImGui::TextDisabled("No events registered.");
+                }
+
+                bool anySubscribed = false;
+
+                for (const EventBus::RegisteredEvent& event : events)
+                {
+                    const Container* subscriber = bus.subscriber(event.handle);
+
+                    if (!subscriber) continue;
+
+                    anySubscribed = true;
+
+                    ImGui::PushID(static_cast<int>(event.handle));
+
+                    ImGui::Text("Event %s", event.name.c_str());
+
+                    ImGui::SameLine();
+
+                    ImGui::TextDisabled(
+                        "[%s]",
+                        subscriber->name().empty()
+                            ? "(unnamed container)"
+                            : subscriber->name().c_str()
+                    );
+
+                    ImGui::SameLine();
+
+                    if (ImGui::Button("Invoke"))
+                    {
+                        bus.emit(event.handle);
                     }
 
                     ImGui::PopID();
                 }
+
+                if (!anySubscribed)
+                {
+                    ImGui::TextDisabled("No container subscribed to any event.");
+                }
+                ImGui::TreePop();
             }
 
             ImGui::End();
@@ -867,6 +993,22 @@ namespace LavaEngine
 
             return IM_COL32(255, 255, 255, 255);
         }
+
+        static void drawInterfaceNode(const Interface& interface)
+        {
+            const std::string header =
+                "Interface: " + demangle(typeid(interface).name());
+
+            if (ImGui::TreeNodeEx(
+                header.c_str(),
+                ImGuiTreeNodeFlags_DefaultOpen
+            ))
+            {
+                interface.imgui();
+                ImGui::TreePop();
+            }
+        }
+
 
         static void drawModulesNode(const ModuleRegistry& modules)
         {
@@ -1552,6 +1694,7 @@ namespace LavaEngine
             m_viewportDepth.reset();
             m_viewportRenderPass.reset();
 
+            m_viewportTextureId = {};
             m_viewportWidth = 0;
             m_viewportHeight = 0;
         }
@@ -1676,5 +1819,7 @@ namespace LavaEngine
 
         bool m_logAutoScroll = true;
         int m_logFilterLevel = 0;   // index into levelNames[] (LavaEngine::LogLevel order)
+
+        bool paused = false;
     };
 }

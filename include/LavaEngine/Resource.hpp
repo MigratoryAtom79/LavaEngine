@@ -139,7 +139,7 @@ namespace LavaEngine
      * clear() or id reuse are rejected rather than aliasing a new resource.
      * @note Ownership: Owned by its Container. Storage is heap-allocated and
      * held through std::shared_ptr so that borrows (ResourceView<T>) can
-     * detect when the owning registry/Container has been destroyed; it is
+     * detect when the owning registry/Container ha s been destroyed; it is
      * non-copyable (a Container uniquely owns its registry) but movable.
      * remove(), clear(), or Container destruction invalidates handles and
      * expires views.

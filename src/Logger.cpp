@@ -31,26 +31,36 @@ namespace LavaEngine
 
     void Logger::setLevel(LogLevel level)
     {
+        std::lock_guard<std::mutex> lock(m_mutex);
+
         m_level = level;
     }
 
     LogLevel Logger::level() const
     {
+        std::lock_guard<std::mutex> lock(m_mutex);
+
         return m_level;
     }
 
     void Logger::setConsoleEnabled(bool enabled)
     {
+        std::lock_guard<std::mutex> lock(m_mutex);
+
         m_consoleEnabled = enabled;
     }
 
     void Logger::setFileEnabled(bool enabled)
     {
+        std::lock_guard<std::mutex> lock(m_mutex);
+
         m_fileEnabled = enabled;
     }
 
     void Logger::setOutput(std::ostream& stream)
     {
+        std::lock_guard<std::mutex> lock(m_mutex);
+
         m_console = &stream;
     }
 
@@ -61,10 +71,10 @@ namespace LavaEngine
 
     void Logger::log(LogLevel level, const std::string& message)
     {
+        std::lock_guard<std::mutex> lock(m_mutex);
+
         if (level < m_level)
             return;
-
-        std::lock_guard<std::mutex> lock(m_mutex);
 
         const std::string line =
             "[" + timestamp() + "] [" +

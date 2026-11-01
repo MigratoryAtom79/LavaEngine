@@ -7,7 +7,8 @@ namespace LavaEngine
 {
     JobID Scheduler::createJob(
         std::function<int()> task,
-        std::function<void()> exit
+        std::function<void()> exit,
+        const std::string& name
     )
     {
         JobID id = m_nextID++;
@@ -18,7 +19,8 @@ namespace LavaEngine
                 Job{
                     .id = id,
                     .task = std::move(task),
-                    .exit = std::move(exit)
+                    .exit = std::move(exit),
+                    .name = name
                 }
             );
         }
@@ -28,7 +30,8 @@ namespace LavaEngine
                 Job{
                     .id = id,
                     .task = std::move(task),
-                    .exit = std::move(exit)
+                .exit = std::move(exit),
+                .name = name
                 }
             );
         }

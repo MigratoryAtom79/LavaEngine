@@ -31,6 +31,7 @@ namespace LavaEngine
         JobID id;
         std::function<int()> task;
         std::function<void()> exit;
+        std::string name;
         std::vector<JobID> dependencies;
         std::chrono::microseconds duration;
     };
@@ -86,10 +87,11 @@ namespace LavaEngine
          * @param task Callable invoked by execute(); its result decides fate.
          * @param exit Optional callback run exactly once when the job leaves
          *        the scheduler (complete, cancel, or destroy).
+         * @param name Name of the job.
          * @return A fresh, unique JobID assigned immediately. During an
          *        execute() pass the job is only scheduled after the pass ends.
          */
-        JobID createJob(std::function<int()> task, std::function<void()> exit = nullptr);
+        JobID createJob(std::function<int()> task, std::function<void()> exit = nullptr, const std::string& name = "");
 
         /**
          * @brief Returns a pointer to the job with the id, or nullptr.
@@ -149,8 +151,6 @@ namespace LavaEngine
         }
 
     private:
-        friend class Application;
-
         Job* findJobImpl(JobID id);
         const Job* findJobConst(JobID id) const;
         bool isCompleted(JobID id) const;

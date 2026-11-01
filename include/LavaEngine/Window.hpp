@@ -16,13 +16,13 @@ namespace LavaEngine
     /**
      * @brief Owns a native GLFW window and its input state.
      * @detail Creates a Vulkan-capable GLFW window and an InputHandler bound
-     * to it. Non-copyable, movable.
+     * to it. Non-copyable and non-movable.
      * @note Ownership: Owned by `VulkanRenderer` as a value member. Window
      * owns the native `GLFWwindow` (destroyed in ~Window) and its
-     * `InputHandler`. A moved-from Window holds a null GLFW handle and must
-     * not be used. GLFW initialization/termination is process-wide; the
-     * destructor calls glfwTerminate(), so no more than one Window should
-     * be alive at a time.
+     * `InputHandler`. GLFW initialization/termination is process-wide; the
+     * destructor calls glfwTerminate(), so exactly one Window may exist per
+     * process. The type is immovable so ownership cannot transfer between
+     * instances and a stale source object cannot tear down the live window.
      * @example
      * @code
      * Window window(1280, 720, "Game");
@@ -36,13 +36,12 @@ namespace LavaEngine
 
         ~Window();
 
-        // Copying is not allowed.
+        // Copying and moving are not allowed: Windows own process-wide GLFW
+        // state and the library supports exactly one Window per process.
         Window(const Window&) = delete;
         Window& operator=(const Window&) = delete;
-
-        // Moving is allowed.
-        Window(Window&& other) noexcept;
-        Window& operator=(Window&& other) noexcept;
+        Window(Window&&) = delete;
+        Window& operator=(Window&&) = delete;
         [[nodiscard]] int getWidth() const;
         [[nodiscard]] int getHeight() const;
 

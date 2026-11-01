@@ -90,29 +90,6 @@ namespace LavaEngine
         };
     }
 
-    Window::Window(Window&& other) noexcept
-        : m_window(other.m_window), m_inputHandler(std::move(other.m_inputHandler))
-    {
-        other.m_window = nullptr;
-
-    }
-
-    Window& Window::operator=(Window&& other) noexcept
-    {
-        if (this == &other)
-            return *this;
-
-        if (m_window)
-            glfwDestroyWindow(m_window);
-
-        m_window = other.m_window;
-        m_inputHandler = std::move(other.m_inputHandler);
-
-        other.m_window = nullptr;
-
-        return *this;
-    }
-
     int Window::getWidth() const
     {
         int width = 0;
