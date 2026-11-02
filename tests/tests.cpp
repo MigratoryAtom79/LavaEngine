@@ -1,10 +1,15 @@
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <exception>
+#include <latch>
 #include <memory>
+#include <optional>
+#include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "../include/LavaEngine/Application.hpp"
@@ -495,6 +500,261 @@ namespace
             *static_cast<std::string*>(title->ptr),
             std::string{"edited"}
         );
+    }
+
+    void testExposedVariablesSurviveMoveConstruction()
+    {
+        std::optional<Container> source;
+        source.emplace("source");
+
+        bool callerBool = true;
+        int callerInt = 7;
+        float callerFloat = 1.5f;
+        double callerDouble = 2.5;
+        std::string callerString = "original";
+
+        source->expose("flag", &callerBool);
+        source->expose("count", &callerInt);
+        source->expose("speed", &callerFloat);
+        source->expose("scale", &callerDouble);
+        source->expose("title", &callerString);
+
+        const auto findVariable =
+            [](Container& container, const char* name) -> Variable*
+            {
+                for (Variable& variable : container.variables())
+                {
+                    if (variable.name == name)
+                        return &variable;
+                }
+
+                return nullptr;
+            };
+
+        Variable* sourceFlag = findVariable(*source, "flag");
+        Variable* sourceCount = findVariable(*source, "count");
+        Variable* sourceSpeed = findVariable(*source, "speed");
+        Variable* sourceScale = findVariable(*source, "scale");
+        Variable* sourceTitle = findVariable(*source, "title");
+
+        CHECK(sourceFlag != nullptr);
+        CHECK(sourceCount != nullptr);
+        CHECK(sourceSpeed != nullptr);
+        CHECK(sourceScale != nullptr);
+        CHECK(sourceTitle != nullptr);
+
+        if (!sourceFlag || !sourceCount || !sourceSpeed ||
+            !sourceScale || !sourceTitle)
+        {
+            return;
+        }
+
+        *static_cast<bool*>(sourceFlag->ptr) = false;
+        *static_cast<int*>(sourceCount->ptr) = 42;
+        *static_cast<float*>(sourceSpeed->ptr) = 99.0f;
+        *static_cast<double*>(sourceScale->ptr) = 123.0;
+        *static_cast<std::string*>(sourceTitle->ptr) = "edited";
+
+        Container moved(std::move(*source));
+        source.reset();
+
+        CHECK_EQ(moved.name(), std::string{"source"});
+        CHECK_EQ(moved.variables().size(), std::size_t{5});
+
+        Variable* flag = findVariable(moved, "flag");
+        Variable* count = findVariable(moved, "count");
+        Variable* speed = findVariable(moved, "speed");
+        Variable* scale = findVariable(moved, "scale");
+        Variable* title = findVariable(moved, "title");
+
+        CHECK(flag != nullptr);
+        CHECK(count != nullptr);
+        CHECK(speed != nullptr);
+        CHECK(scale != nullptr);
+        CHECK(title != nullptr);
+
+        if (!flag || !count || !speed || !scale || !title)
+            return;
+
+        CHECK(!*static_cast<bool*>(flag->ptr));
+        CHECK_EQ(*static_cast<int*>(count->ptr), 42);
+        CHECK_EQ(*static_cast<float*>(speed->ptr), 99.0f);
+        CHECK_EQ(*static_cast<double*>(scale->ptr), 123.0);
+        CHECK_EQ(
+            *static_cast<std::string*>(title->ptr),
+            std::string{"edited"}
+        );
+
+        *static_cast<int*>(count->ptr) = 84;
+        CHECK_EQ(*static_cast<int*>(count->ptr), 84);
+    }
+
+    void testExposedVariablesSurviveMoveAssignment()
+    {
+        const auto findVariable =
+            [](Container& container, const char* name) -> Variable*
+            {
+                for (Variable& variable : container.variables())
+                {
+                    if (variable.name == name)
+                        return &variable;
+                }
+
+                return nullptr;
+            };
+
+        bool staleBool = true;
+        Container target("target");
+        target.expose("stale", &staleBool);
+
+        bool callerBool = true;
+        int callerInt = 7;
+        float callerFloat = 1.5f;
+        double callerDouble = 2.5;
+        std::string callerString = "original";
+
+        {
+            Container source("source");
+            source.expose("flag", &callerBool);
+            source.expose("count", &callerInt);
+            source.expose("speed", &callerFloat);
+            source.expose("scale", &callerDouble);
+            source.expose("title", &callerString);
+
+            Variable* flag = findVariable(source, "flag");
+            Variable* count = findVariable(source, "count");
+            Variable* speed = findVariable(source, "speed");
+            Variable* scale = findVariable(source, "scale");
+            Variable* title = findVariable(source, "title");
+
+            CHECK(flag != nullptr);
+            CHECK(count != nullptr);
+            CHECK(speed != nullptr);
+            CHECK(scale != nullptr);
+            CHECK(title != nullptr);
+
+            if (!flag || !count || !speed || !scale || !title)
+                return;
+
+            *static_cast<bool*>(flag->ptr) = false;
+            *static_cast<int*>(count->ptr) = 42;
+            *static_cast<float*>(speed->ptr) = 99.0f;
+            *static_cast<double*>(scale->ptr) = 123.0;
+            *static_cast<std::string*>(title->ptr) = "edited";
+
+            target = std::move(source);
+        }
+
+        CHECK_EQ(target.name(), std::string{"source"});
+        CHECK_EQ(target.variables().size(), std::size_t{5});
+        CHECK(findVariable(target, "stale") == nullptr);
+
+        Variable* flag = findVariable(target, "flag");
+        Variable* count = findVariable(target, "count");
+        Variable* speed = findVariable(target, "speed");
+        Variable* scale = findVariable(target, "scale");
+        Variable* title = findVariable(target, "title");
+
+        CHECK(flag != nullptr);
+        CHECK(count != nullptr);
+        CHECK(speed != nullptr);
+        CHECK(scale != nullptr);
+        CHECK(title != nullptr);
+
+        if (!flag || !count || !speed || !scale || !title)
+            return;
+
+        CHECK(!*static_cast<bool*>(flag->ptr));
+        CHECK_EQ(*static_cast<int*>(count->ptr), 42);
+        CHECK_EQ(*static_cast<float*>(speed->ptr), 99.0f);
+        CHECK_EQ(*static_cast<double*>(scale->ptr), 123.0);
+        CHECK_EQ(
+            *static_cast<std::string*>(title->ptr),
+            std::string{"edited"}
+        );
+
+        *static_cast<int*>(count->ptr) = 84;
+        CHECK_EQ(*static_cast<int*>(count->ptr), 84);
+    }
+
+    void testExposedLiveVariables()
+    {
+        const auto findVariable =
+            [](Container& container, const char* name) -> Variable*
+            {
+                for (Variable& variable : container.variables())
+                {
+                    if (variable.name == name)
+                        return &variable;
+                }
+
+                return nullptr;
+            };
+
+        Container source("source");
+
+        float speed = 1.5f;
+        int count = 3;
+
+        source.exposeLive("speed", &speed);
+        source.exposeLive("count", &count);
+
+        CHECK_EQ(source.variables().size(), std::size_t{2});
+
+        Variable* speedVariable = findVariable(source, "speed");
+        Variable* countVariable = findVariable(source, "count");
+
+        CHECK(speedVariable != nullptr);
+        CHECK(countVariable != nullptr);
+
+        if (!speedVariable || !countVariable)
+            return;
+
+        CHECK(speedVariable->live);
+        CHECK(countVariable->live);
+        CHECK(speedVariable->ptr == &speed);
+        CHECK(countVariable->ptr == &count);
+
+        *static_cast<float*>(speedVariable->ptr) = 10.0f;
+        CHECK_EQ(speed, 10.0f);
+
+        Container moved(std::move(source));
+
+        CHECK_EQ(moved.variables().size(), std::size_t{2});
+
+        speedVariable = findVariable(moved, "speed");
+
+        CHECK(speedVariable != nullptr);
+
+        if (!speedVariable)
+            return;
+
+        CHECK(speedVariable->ptr == &speed);
+        *static_cast<float*>(speedVariable->ptr) = 20.0f;
+        CHECK_EQ(speed, 20.0f);
+
+        moved.unexpose("speed");
+        CHECK_EQ(moved.variables().size(), std::size_t{1});
+        CHECK(findVariable(moved, "speed") == nullptr);
+
+        Container target("target");
+        int stale = 0;
+        target.exposeLive("stale", &stale);
+
+        target = std::move(moved);
+
+        CHECK_EQ(target.variables().size(), std::size_t{1});
+        CHECK(findVariable(target, "stale") == nullptr);
+
+        countVariable = findVariable(target, "count");
+
+        CHECK(countVariable != nullptr);
+
+        if (!countVariable)
+            return;
+
+        *static_cast<int*>(countVariable->ptr) = 7;
+        CHECK_EQ(count, 7);
     }
 
     void testTeardownHooksRunBeforeDestruction()
@@ -1324,6 +1584,606 @@ namespace
         CHECK(!sub.valid());
     }
 
+    void testJobMarketBasics()
+    {
+        JobMarket market;
+
+        CHECK(market.empty());
+        CHECK_EQ(market.size(), std::size_t{0});
+
+        CHECK(market.post({"first", [] {}}));
+        CHECK(market.post({"second", [] {}}));
+
+        CHECK_EQ(market.size(), std::size_t{2});
+
+        JobMarket::WorkItem item;
+
+        CHECK(market.tryTake(item));
+        CHECK_EQ(item.name, std::string("first"));
+
+        CHECK(market.tryTake(item));
+        CHECK_EQ(item.name, std::string("second"));
+
+        CHECK(!market.tryTake(item));
+        CHECK(market.empty());
+    }
+
+    void testJobMarketCloseDiscards()
+    {
+        JobMarket market;
+
+        CHECK(market.post({"queued", [] {}}));
+
+        market.close();
+
+        CHECK(market.closed());
+        CHECK(market.empty());
+        CHECK(!market.post({"rejected", [] {}}));
+
+        JobMarket::WorkItem item;
+
+        CHECK(!market.tryTake(item));
+        CHECK(!market.waitTake(item));
+    }
+
+    void testJobMarketWaitTake()
+    {
+        JobMarket market;
+
+        std::atomic<bool> took{false};
+
+        std::thread consumer(
+            [&market, &took]
+            {
+                JobMarket::WorkItem item;
+                took.store(market.waitTake(item));
+            }
+        );
+
+        CHECK(market.post({"job", [] {}}));
+
+        consumer.join();
+
+        CHECK(took.load());
+        CHECK(market.empty());
+    }
+
+    void testJobMarketQueuedNames()
+    {
+        JobMarket market;
+
+        CHECK(market.post({"first", [] {}}));
+        CHECK(market.post({"", [] {}}));
+        CHECK(market.post({"third", [] {}}));
+
+        const std::vector<std::string> names = market.queuedNames();
+
+        CHECK_EQ(names.size(), std::size_t{3});
+        CHECK_EQ(names[0], std::string("first"));
+        CHECK_EQ(names[1], std::string(""));
+        CHECK_EQ(names[2], std::string("third"));
+
+        JobMarket::WorkItem item;
+
+        CHECK(market.tryTake(item));
+        CHECK_EQ(market.queuedNames().size(), std::size_t{2});
+    }
+
+    void testWorkerPoolRunsJobs()
+    {
+        WorkerPool pool(2);
+
+        CHECK_EQ(pool.workerCount(), std::size_t{2});
+
+        constexpr int kJobs = 64;
+
+        std::atomic<int> completed{0};
+        std::latch done(kJobs);
+
+        for (int i = 0; i < kJobs; ++i)
+        {
+            CHECK(pool.post(
+                [&completed, &done]
+                {
+                    completed.fetch_add(1, std::memory_order_relaxed);
+                    done.count_down();
+                }
+            ));
+        }
+
+        done.wait();
+
+        CHECK_EQ(completed.load(), kJobs);
+
+        pool.stop();
+
+        CHECK(pool.stopped());
+        CHECK(!pool.post([] {}));
+    }
+
+    void testWorkerPoolSurvivesJobException()
+    {
+        std::atomic<int> errors{0};
+        std::atomic<int> completed{0};
+
+        std::latch done(2);
+
+        WorkerPool pool(
+            1,
+            [&errors](std::exception_ptr)
+            {
+                errors.fetch_add(1, std::memory_order_relaxed);
+            }
+        );
+
+        CHECK(pool.post(
+            [&done]
+            {
+                done.count_down();
+                throw std::runtime_error("expected test failure");
+            }
+        ));
+
+        // Runs only if the worker survived the throwing job.
+        CHECK(pool.post(
+            [&completed, &done]
+            {
+                completed.fetch_add(1, std::memory_order_relaxed);
+                done.count_down();
+            }
+        ));
+
+        done.wait();
+
+        CHECK_EQ(errors.load(), 1);
+        CHECK_EQ(completed.load(), 1);
+
+        pool.stop();
+    }
+
+    void testWorkerPoolStopDiscardsUnhired()
+    {
+        std::latch started(1);
+        std::latch release(1);
+
+        std::atomic<int> ran{0};
+
+        WorkerPool pool(1);
+
+        CHECK(pool.post(
+            [&]
+            {
+                started.count_down();
+                release.wait();
+                ran.fetch_add(1, std::memory_order_relaxed);
+            }
+        ));
+
+        started.wait();
+
+        // Queued but not hired; stop() must discard it.
+        CHECK(pool.post(
+            [&ran]
+            {
+                ran.fetch_add(100, std::memory_order_relaxed);
+            }
+        ));
+
+        std::thread stopper([&pool] { pool.stop(); });
+
+        while (!pool.market().closed())
+            std::this_thread::yield();
+
+        release.count_down();
+        stopper.join();
+
+        CHECK_EQ(ran.load(), 1);
+        CHECK(pool.stopped());
+    }
+
+    void testWorkerPoolStopIdempotent()
+    {
+        WorkerPool pool(2);
+
+        pool.stop();
+        pool.stop();
+
+        CHECK(pool.stopped());
+        CHECK(!pool.post([] {}));
+    }
+
+    void testWorkerPoolSnapshots()
+    {
+        WorkerPool pool(1);
+
+        const std::vector<WorkerPool::WorkerSnapshot> initial =
+            pool.workerSnapshots();
+
+        CHECK_EQ(initial.size(), std::size_t{1});
+        CHECK(!initial[0].busy);
+        CHECK(initial[0].jobName.empty());
+
+        std::latch started(1);
+        std::latch release(1);
+
+        CHECK(pool.post(
+            [&started, &release]
+            {
+                started.count_down();
+                release.wait();
+            },
+            "long job"
+        ));
+
+        started.wait();
+
+        const std::vector<WorkerPool::WorkerSnapshot> busy =
+            pool.workerSnapshots();
+
+        CHECK_EQ(busy.size(), std::size_t{1});
+        CHECK(busy[0].busy);
+        CHECK_EQ(busy[0].jobName, std::string("long job"));
+
+        CHECK(pool.post([] {}, "queued job"));
+
+        const std::vector<std::string> queued =
+            pool.market().queuedNames();
+
+        CHECK_EQ(queued.size(), std::size_t{1});
+        CHECK_EQ(queued[0], std::string("queued job"));
+
+        release.count_down();
+        pool.stop();
+    }
+
+    void testSchedulerWorkerPoolPeek()
+    {
+        Scheduler scheduler;
+
+        CHECK(scheduler.workerPoolIfCreated() == nullptr);
+
+        WorkerPool& pool = scheduler.workerPool(2);
+
+        CHECK_EQ(pool.workerCount(), std::size_t{2});
+
+        CHECK(scheduler.workerPoolIfCreated() == &pool);
+
+        scheduler.stopWorkers();
+
+        CHECK(scheduler.workerPoolIfCreated() == nullptr);
+    }
+
+    void testSchedulerWorkerPoolDefaultCount()
+    {
+        Scheduler scheduler;
+
+        WorkerPool& pool = scheduler.workerPool();
+
+        const std::size_t expected = std::max<std::size_t>(
+            std::size_t{1},
+            std::thread::hardware_concurrency()
+        );
+
+        CHECK_EQ(pool.workerCount(), expected);
+
+        scheduler.stopWorkers();
+    }
+
+    void testSchedulerPostsToMarket()
+    {
+        Scheduler scheduler;
+
+        std::atomic<int> completed{0};
+        std::latch done(1);
+
+        CHECK(scheduler.postJobToMarket(
+            [&completed, &done]
+            {
+                completed.fetch_add(1, std::memory_order_relaxed);
+                done.count_down();
+            },
+            "market job"
+        ));
+
+        done.wait();
+
+        CHECK_EQ(completed.load(), 1);
+        CHECK(scheduler.workerPool().workerCount() >= 1);
+
+        scheduler.stopWorkers();
+    }
+
+    void testApplicationUnloadDrainsWorkers()
+    {
+        Application app;
+
+        std::atomic<int> completed{0};
+        std::latch started(1);
+
+        CHECK(app.getScheduler()->postJobToMarket(
+            [&completed, &started]
+            {
+                started.count_down();
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(10)
+                );
+                completed.fetch_add(1, std::memory_order_relaxed);
+            }
+        ));
+
+        started.wait();
+
+        app.unloadGame();
+
+        CHECK_EQ(completed.load(), 1);
+    }
+
+    void testTaskGroup()
+    {
+        TaskGroup group(3);
+
+        CHECK_EQ(group.remaining(), std::size_t{3});
+
+        group.done();
+        CHECK_EQ(group.remaining(), std::size_t{2});
+
+        group.done();
+        group.done();
+
+        CHECK_EQ(group.remaining(), std::size_t{0});
+
+        group.wait();
+
+        // Extra completions are ignored.
+        group.done();
+        CHECK_EQ(group.remaining(), std::size_t{0});
+    }
+
+    void testTaskGroupWaitsForThreads()
+    {
+        TaskGroup group(4);
+
+        std::vector<std::thread> threads;
+        threads.reserve(4);
+
+        for (int i = 0; i < 4; ++i)
+        {
+            threads.emplace_back([&group] { group.done(); });
+        }
+
+        group.wait();
+
+        for (std::thread& thread : threads)
+            thread.join();
+
+        CHECK_EQ(group.remaining(), std::size_t{0});
+    }
+
+    void testWorkerPoolParallelFor()
+    {
+        WorkerPool pool(4);
+
+        constexpr std::size_t kCount = 1000;
+        std::vector<int> values(kCount, 0);
+
+        pool.parallelFor(
+            kCount,
+            8,
+            [&values](std::size_t i)
+            {
+                values[i] = static_cast<int>(i);
+            }
+        );
+
+        bool ok = true;
+
+        for (std::size_t i = 0; i < kCount; ++i)
+            ok = ok && values[i] == static_cast<int>(i);
+
+        CHECK(ok);
+
+        pool.stop();
+    }
+
+    void testWorkerPoolParallelForPhases()
+    {
+        WorkerPool pool(4);
+
+        constexpr std::size_t kCount = 64;
+        std::vector<int> data(kCount, 0);
+        std::vector<int> next(kCount, 0);
+
+        pool.parallelFor(
+            kCount,
+            4,
+            [&data](std::size_t i)
+            {
+                data[i] = 1;
+            }
+        );
+
+        // Must observe every write from the previous phase. Reads the old
+        // buffer and writes a separate one so the phase itself has no races.
+        pool.parallelFor(
+            kCount,
+            4,
+            [&data, &next](std::size_t i)
+            {
+                next[i] = data[i] + data[(i + 1) % kCount];
+            }
+        );
+
+        bool ok = true;
+
+        for (int value : next)
+            ok = ok && value == 2;
+
+        CHECK(ok);
+
+        pool.stop();
+    }
+
+    void testWorkerPoolNestedParallelFor()
+    {
+        WorkerPool pool(2);
+
+        std::latch done(1);
+        std::atomic<int> total{0};
+
+        CHECK(pool.post(
+            [&pool, &done, &total]
+            {
+                // Nested calls run inline instead of deadlocking the pool.
+                pool.parallelFor(
+                    100,
+                    4,
+                    [&total](std::size_t)
+                    {
+                        total.fetch_add(1, std::memory_order_relaxed);
+                    }
+                );
+
+                done.count_down();
+            }
+        ));
+
+        done.wait();
+
+        CHECK_EQ(total.load(), 100);
+
+        pool.stop();
+    }
+
+    void testWorkerPoolParallelForAfterStop()
+    {
+        WorkerPool pool(2);
+        pool.stop();
+
+        std::atomic<int> ran{0};
+
+        pool.parallelFor(
+            10,
+            1,
+            [&ran](std::size_t)
+            {
+                ran.fetch_add(1, std::memory_order_relaxed);
+            }
+        );
+
+        CHECK_EQ(ran.load(), 10);
+    }
+
+    void testWorkerPoolParallelForTaskException()
+    {
+        std::atomic<int> errors{0};
+        std::atomic<int> ran{0};
+
+        WorkerPool pool(
+            2,
+            [&errors](std::exception_ptr)
+            {
+                errors.fetch_add(1, std::memory_order_relaxed);
+            }
+        );
+
+        // A throwing task must not hang the phase or kill a worker.
+        pool.parallelFor(
+            64,
+            1,
+            [&ran](std::size_t i)
+            {
+                ran.fetch_add(1, std::memory_order_relaxed);
+
+                if (i == 0)
+                    throw std::runtime_error("expected test failure");
+            }
+        );
+
+        CHECK_EQ(ran.load(), 64);
+        CHECK_EQ(errors.load(), 1);
+
+        pool.stop();
+    }
+
+    void testJobMarketCapacity()
+    {
+        JobMarket market(1);
+
+        CHECK_EQ(market.capacity(), std::size_t{1});
+        CHECK(market.tryPost({"first", [] {}}));
+        CHECK(!market.tryPost({"second", [] {}}));
+        CHECK_EQ(market.size(), std::size_t{1});
+
+        JobMarket::WorkItem item;
+
+        CHECK(market.tryTake(item));
+        CHECK_EQ(item.name, std::string("first"));
+
+        CHECK(market.tryPost({"third", [] {}}));
+        CHECK_EQ(market.size(), std::size_t{1});
+    }
+
+    void testJobMarketBoundedPost()
+    {
+        JobMarket market(1);
+
+        CHECK(market.post({"first", [] {}}));
+
+        std::atomic<bool> posted{false};
+
+        std::thread producer(
+            [&market, &posted]
+            {
+                posted.store(market.post({"second", [] {}}));
+            }
+        );
+
+        JobMarket::WorkItem item;
+        CHECK(market.tryTake(item));
+
+        producer.join();
+
+        CHECK(posted.load());
+        CHECK_EQ(market.size(), std::size_t{1});
+    }
+
+    void testJobMarketBoundedPostClose()
+    {
+        JobMarket market(1);
+
+        CHECK(market.post({"first", [] {}}));
+
+        std::atomic<bool> result{true};
+        std::latch started(1);
+
+        std::thread producer(
+            [&market, &result, &started]
+            {
+                started.count_down();
+                result.store(market.post({"second", [] {}}));
+            }
+        );
+
+        started.wait();
+        std::this_thread::yield();
+
+        market.close();
+        producer.join();
+
+        CHECK(!result.load());
+        CHECK(market.empty());
+    }
+
+    void testWorkerPoolMarketCapacity()
+    {
+        WorkerPool pool(2, {}, 4);
+
+        CHECK_EQ(pool.workerCount(), std::size_t{2});
+        CHECK_EQ(pool.market().capacity(), std::size_t{4});
+
+        pool.stop();
+    }
+
     struct TestCase
     {
         const char* name;
@@ -1341,6 +2201,9 @@ namespace
         {"Container interface", testContainerInterface},
         {"Container interface move", testContainerMoveRepointsInterface},
         {"Exposed variables", testExposedBoxes},
+        {"Exposed variables move construction", testExposedVariablesSurviveMoveConstruction},
+        {"Exposed variables move assignment", testExposedVariablesSurviveMoveAssignment},
+        {"Exposed live variables", testExposedLiveVariables},
         {"Teardown ordering", testTeardownHooksRunBeforeDestruction},
         {"Default container unload", testDefaultContainerOnUnload},
         {"Type ID stability", testTypeIdStability},
@@ -1353,6 +2216,30 @@ namespace
         {"Scheduler re-entrant destroy", testSchedulerReentrantDestroy},
         {"Scheduler exit exactly once", testSchedulerExitExactlyOnce},
         {"Scheduler exitAll drains", testSchedulerExitAllDrainsCreatedDuringExit},
+        {"JobMarket basics", testJobMarketBasics},
+        {"JobMarket close discards", testJobMarketCloseDiscards},
+        {"JobMarket waitTake", testJobMarketWaitTake},
+        {"JobMarket queued names", testJobMarketQueuedNames},
+        {"WorkerPool runs jobs", testWorkerPoolRunsJobs},
+        {"WorkerPool survives exceptions", testWorkerPoolSurvivesJobException},
+        {"WorkerPool stop discards unhired", testWorkerPoolStopDiscardsUnhired},
+        {"WorkerPool stop idempotent", testWorkerPoolStopIdempotent},
+        {"WorkerPool market capacity", testWorkerPoolMarketCapacity},
+        {"TaskGroup counts down", testTaskGroup},
+        {"TaskGroup waits for threads", testTaskGroupWaitsForThreads},
+        {"WorkerPool parallelFor", testWorkerPoolParallelFor},
+        {"WorkerPool parallelFor phases", testWorkerPoolParallelForPhases},
+        {"WorkerPool nested parallelFor", testWorkerPoolNestedParallelFor},
+        {"WorkerPool parallelFor after stop", testWorkerPoolParallelForAfterStop},
+        {"WorkerPool parallelFor exception", testWorkerPoolParallelForTaskException},
+        {"JobMarket capacity", testJobMarketCapacity},
+        {"JobMarket bounded post", testJobMarketBoundedPost},
+        {"JobMarket close unblocks post", testJobMarketBoundedPostClose},
+        {"WorkerPool snapshots", testWorkerPoolSnapshots},
+        {"Scheduler worker pool peek", testSchedulerWorkerPoolPeek},
+        {"Scheduler worker pool default count", testSchedulerWorkerPoolDefaultCount},
+        {"Scheduler posts to market", testSchedulerPostsToMarket},
+        {"Application unload drains workers", testApplicationUnloadDrainsWorkers},
         {"Application step completes job", testApplicationStepCompletesJob},
         {"Application run requestExit", testApplicationRunStopsOnRequestExit},
         {"Application run picks up new jobs", testApplicationRunPicksUpJobsCreatedDuringExecute},

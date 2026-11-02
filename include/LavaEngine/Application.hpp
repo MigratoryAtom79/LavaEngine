@@ -37,8 +37,9 @@ namespace LavaEngine
      * getLogger(), findFramework<>(), findContainer<>()) are valid only
      * while the Application outlives them. unloadGame() teardown runs in fixed phases:
      * (1) container/module onUnload() hooks, (2) framework shutdown(),
-     * (3) scheduler job destruction, (4) event bus clearing, (5) container
-     * destruction, (6) framework destruction. A teardown hook at phase 1 is
+     * (3) scheduler job destruction, (4) worker pool drain/join, (5) event
+     * bus clearing, (6) container destruction, (7) framework destruction.
+     * A teardown hook at phase 1 is
      * the last point at which non-owning references (e.g. the renderer's
      * overlay callback) may be released while the borrowed-from objects are
      * still alive.
@@ -283,6 +284,11 @@ namespace LavaEngine
             // Phase 3 - scheduler: destroy jobs before the objects they
             // may borrow from.
             m_scheduler.clear();
+
+            // Phase 3.5 - workers: finish in-flight tasks, discard unhired
+            // jobs, and join before containers are destroyed or a hot-reloaded
+            // game library is unloaded.
+            m_scheduler.stopWorkers();
 
             // Phase 4 - event bus: drop registrations and their type-erased
             // callbacks before the game library that defined them is unloaded.

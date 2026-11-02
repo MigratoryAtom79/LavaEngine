@@ -25,19 +25,20 @@ namespace LavaEngine
     };
 
     /**
-     * @brief A name/type/box triple exposing a value to the Inspector.
-     * @detail Created via Container::expose(); the Inspector reads and
-     * writes through `ptr` according to `type`.
+     * @brief A name/type/value binding exposed to the Inspector.
+     * @detail Created via Container::expose() or Container::exposeLive();
+     * the Inspector reads and writes through `ptr` according to `type`.
      * @note Ownership: Owned by the owning Container (by value in
-     * `m_variables`, box heap-allocated in `m_boxes`). `ptr` points into
-     * an owned, stable heap box, so the Inspector may always safely read
-     * and write through it regardless of what the caller does afterwards.
+     * `m_variables`). Snapshot variables point into an owned heap box in
+     * `m_boxes`. Live variables point at caller-owned memory that must
+     * outlive the binding.
      */
     struct Variable
     {
         std::string name;
         void* ptr;
         VarType type;
+        bool live = false;
     };
 
 
@@ -338,6 +339,23 @@ namespace LavaEngine
         void expose(const std::string& name, std::string* variable);
 
         /**
+         * @brief Binds a caller-owned value to the Inspector for live editing.
+         * @param variable Must outlive this binding and keep a stable address.
+         * @note The Inspector writes directly to `*variable`. Call unexpose()
+         * before destroying it, or keep it alive for the Container's lifetime.
+         */
+        void exposeLive(const std::string& name, float* variable);
+        void exposeLive(const std::string& name, int* variable);
+        void exposeLive(const std::string& name, bool* variable);
+        void exposeLive(const std::string& name, double* variable);
+        void exposeLive(const std::string& name, std::string* variable);
+
+        /**
+         * @brief Removes an exposed snapshot or live binding by name.
+         */
+        void unexpose(const std::string& name);
+
+        /**
          * @brief Registers `handler` as this container's subscription to Event.
          * @param handler Callable invoked with `const Event&` on every emit.
          * @return The EventBus::Subscription RAII handle owning the slot.
@@ -401,6 +419,8 @@ namespace LavaEngine
             double doublePrec = 0.0;
             std::string stringValue;
         };
+
+        void rebindExposedVariables() noexcept;
 
         std::string m_name;
 

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(LavaEngine
-        VERSION 0.8.0
+        VERSION 0.10.0
         LANGUAGES CXX
 )
 
@@ -10,6 +10,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Vulkan REQUIRED)
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
 
 set(GLFW_LIBRARY_TYPE SHARED CACHE STRING "" FORCE)
 add_subdirectory(external/glfw-3.5.1)
@@ -70,6 +72,15 @@ add_library(LavaEngine SHARED
         include/LavaEngine/Scheduler.hpp
         src/Scheduler.cpp
 
+        include/LavaEngine/JobMarket.hpp
+        src/JobMarket.cpp
+
+        include/LavaEngine/WorkerPool.hpp
+        src/WorkerPool.cpp
+
+        include/LavaEngine/TaskGroup.hpp
+        src/TaskGroup.cpp
+
         include/LavaEngine/EventBus.hpp
 
         include/LavaEngine/Framework.hpp
@@ -107,6 +118,7 @@ target_include_directories(LavaEngine
 target_link_libraries(LavaEngine
         PUBLIC
         LavaVK
+        Threads::Threads
 )
 
 add_library(LavaEngine::LavaEngine ALIAS LavaEngine)

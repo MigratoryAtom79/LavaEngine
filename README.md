@@ -1,4 +1,4 @@
-# LavaEngine [0.9.0-indev]
+# LavaEngine [0.10.0-indev]
 
 **LavaEngine** is a modular C++ game framework designed to provide the infrastructure needed to build games and interactive applications without imposing a predefined engine architecture.
 
@@ -308,12 +308,13 @@ public:
 };
 ```
 
-The module can register these properties with LavaEngine:
+After adding the module, expose its values through the owning Container:
 
 ```c++
-inspect
-    .property("gravity", gravity)
-    .property("debugDraw", debugDraw);
+auto& physics = game.addModule<Physics>();
+
+game.exposeLive("gravity", &physics.gravity);
+game.exposeLive("debugDraw", &physics.debugDraw);
 ```
 
 The Inspector can then automatically display:
@@ -325,9 +326,15 @@ Gravity       [ 9.81 ]
 Debug Draw    [ ✓ ]
 ```
 
-Changing a writable property in the Inspector modifies the live object.
+`exposeLive()` binds caller-owned memory directly: Inspector edits modify the
+live value immediately, so `physics.gravity` changes while the game runs. The
+bound object must outlive the binding and keep a stable address. Call
+`unexpose("gravity")` before destroying it early.
 
-This allows developers to experiment with values without restarting the application.
+`expose()` is the safe alternative. It snapshots the value into
+Container-owned storage; the Inspector edits that copy, not the caller's
+variable. Use it for read-mostly diagnostics or when the original lifetime is
+uncertain.
 
 For example:
 
@@ -475,6 +482,62 @@ pacing, or `requestExit()` to stop a job that would otherwise repeat forever.
 `step()` advances a single pass and does not pace; use `waitForNextFrame()` when
 driving your own loop.
 
+### WorkerPool and JobMarket
+
+The `Scheduler` also owns an optional `WorkerPool`. A `WorkerPool` owns a
+`JobMarket`: a thread-safe queue of work. Worker threads that are waiting on the
+market are unemployed; posting a job wakes one, which is hired to run it.
+
+```c++
+engine.getScheduler()->postJobToMarket(
+    [&]
+    {
+        // Runs on a worker thread. No result is returned.
+        processChunk(chunk);
+    },
+    "process chunk"
+);
+```
+
+`postJobToMarket()` is fire-and-forget: it does not create a `Scheduler::Job`
+and does not participate in `JobID`s, dependencies, or completion tracking.
+
+For parallel work with a phase boundary, use `WorkerPool::parallelFor`:
+
+```c++
+auto& pool = engine.getScheduler()->workerPool();
+
+pool.parallelFor(chunks.size(), 16, [&](std::size_t i)
+{
+    generateTerrain(chunks[i]);
+}); // returns only when every chunk is generated
+
+pool.parallelFor(chunks.size(), 16, [&](std::size_t i)
+{
+    buildMesh(chunks[i]);
+}); // next phase
+```
+
+`parallelFor` blocks until every index is processed, so consecutive calls form
+host-driven phase barriers. Nested calls made from a worker, and calls on a
+stopped pool, run inline on the calling thread to avoid deadlock. `TaskGroup`
+is the underlying count/wait primitive if you need to dispatch manually.
+
+`JobMarket` can be bounded (`JobMarket(capacity)` or
+`WorkerPool(workers, onError, marketCapacity)`). `post` blocks while a bounded
+market is full; `tryPost` returns `false` instead. A capacity of `0` is
+unbounded.
+
+Worker tasks must not touch main-thread-only engine state (`Container`,
+`Module`, `ResourceRegistry`, `EventBus`, GLFW, ImGui, Vulkan). Hand workers
+stable, plain data and let the main thread commit results afterwards.
+
+`stopWorkers()` closes the market, discards jobs that have not been hired, and
+waits for in-flight jobs before joining the threads. `Application::unloadGame()`
+does this automatically before containers are destroyed or a hot-reloaded game
+library is unloaded. Posting again after `stopWorkers()` lazily creates a fresh
+pool.
+
 ---
 
 ## Application Teardown
@@ -492,11 +555,14 @@ reload) tears the session down in a fixed, deterministic order:
    offscreen target).
 3. **Scheduler** — all jobs are destroyed before the objects they may
    borrow from.
-4. **EventBus** — all event registrations, triggers and subscriptions are
+4. **WorkerPool** — in-flight tasks finish, jobs that have not been hired are
+   discarded, and worker threads are joined before containers are destroyed or
+   a game library is unloaded.
+5. **EventBus** — all event registrations, triggers and subscriptions are
    cleared before the game library that defined them is unloaded. Event
    handles do not survive a reload.
-5. **Containers** — destroyed (Modules, then Resources and exposed boxes).
-6. **Framework** — destroyed last.
+6. **Containers** — destroyed (Modules, then Resources and exposed boxes).
+7. **Framework** — destroyed last.
 
 ### Ownership model
 
@@ -507,7 +573,11 @@ reload) tears the session down in a fixed, deterministic order:
   owner or resource is gone.
 - `importResource()` returns a `ResourceView`, never a raw pointer.
 - `expose()` snapshots the value into an owned box; the Inspector edits the
-  box, never caller memory.
+  box, never caller memory. Boxes move with the Container and their
+  `Variable::ptr` values are rebound after a move.
+- `exposeLive()` is a non-owning binding: the Inspector edits caller memory
+  directly. The target must outlive the binding or be removed with
+  `unexpose()` first.
 - Modules point back to their owning Container; the back-pointer is re-pointed
   when the Container is moved.
 
@@ -529,6 +599,30 @@ rebuilt. The EventBus is session-scoped: `lavaEngineMain` must register its
 events again after every load. `lavac inspect` handles the Inspector lifecycle
 automatically — it detaches before teardown and rebinds to the new
 `VulkanRenderer` after the library loads.
+
+---
+
+## Manual Smoke Test
+
+Run from the repository root so the example can find its shader files.
+
+```bash
+cmake -S . -B build
+cmake --build build
+./build/LavaEngine/lavac/lavac ./build/libExample.so inspect
+```
+
+Verify:
+
+- The window opens and renders the rotating sphere.
+- The Inspector lists Containers, Modules, Resources, Variables and Events.
+- The `Game` container shows the `IGameControl` interface.
+- The interface's rotation-speed slider changes the sphere's rotation.
+- The Inspector can invoke the test event and the count updates.
+- Closing the window exits cleanly without an ASan/UBSan report.
+- Rebuilding `Example` while `lavac inspect` is running triggers a reload
+  without a crash.
+- `ctest --test-dir build --output-on-failure` passes.
 
 ---
 

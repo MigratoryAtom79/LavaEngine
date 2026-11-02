@@ -44,6 +44,7 @@ namespace LavaEngine
           m_jobs_completed(std::move(other.m_jobs_completed)),
           m_pending_adds(std::move(other.m_pending_adds)),
           m_pending_removes(std::move(other.m_pending_removes)),
+          m_workerPool(std::move(other.m_workerPool)),
           m_nextID(other.m_nextID),
           m_iterating(other.m_iterating),
           m_pending_clear(other.m_pending_clear)
@@ -62,6 +63,7 @@ namespace LavaEngine
         m_jobs_completed = std::move(other.m_jobs_completed);
         m_pending_adds = std::move(other.m_pending_adds);
         m_pending_removes = std::move(other.m_pending_removes);
+        m_workerPool = std::move(other.m_workerPool);
         m_nextID = other.m_nextID;
         m_iterating = other.m_iterating;
         m_pending_clear = other.m_pending_clear;
@@ -71,6 +73,39 @@ namespace LavaEngine
         other.m_pending_clear = false;
 
         return *this;
+    }
+
+    WorkerPool& Scheduler::workerPool(std::size_t workerCount)
+    {
+        if (!m_workerPool)
+        {
+            if (workerCount == 0)
+                m_workerPool = std::make_unique<WorkerPool>();
+            else
+                m_workerPool = std::make_unique<WorkerPool>(workerCount);
+        }
+
+        return *m_workerPool;
+    }
+
+    bool Scheduler::postJobToMarket(
+        std::function<void()> task,
+        std::string name
+    )
+    {
+        return workerPool().post(
+            std::move(task),
+            std::move(name)
+        );
+    }
+
+    void Scheduler::stopWorkers()
+    {
+        if (!m_workerPool)
+            return;
+
+        m_workerPool->stop();
+        m_workerPool.reset();
     }
 
     Job* Scheduler::findJob(JobID id)

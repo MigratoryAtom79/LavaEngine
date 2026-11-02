@@ -2,7 +2,11 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <string>
 #include <vector>
+
+#include "WorkerPool.hpp"
 
 namespace LavaEngine
 {
@@ -41,7 +45,9 @@ namespace LavaEngine
      * @detail Execution contract:
      * - Single-threaded: jobs run serially, in creation order, never
      *   concurrently, on the thread that calls execute(). The Scheduler is not
-     *   thread-safe and must be driven from one thread at a time.
+     *   thread-safe and must be driven from one thread at a time. Tasks posted
+     *   with postJobToMarket() are separate: they are executed by the owned
+     *   WorkerPool and do not participate in the Job/dependency model.
      * - execute() runs every ready, incomplete job once per call. A job whose
      *   dependencies are not all completed is skipped until a later pass.
      * - A task returning > 0 completes the job, < 0 cancels it; both run exit()
@@ -58,9 +64,10 @@ namespace LavaEngine
      * - Job ordering is deterministic: within a pass, ready jobs run in the
      *   order they were created.
      * @note Ownership: Owned by `Application` (m_scheduler, by value). It
-     * uniquely owns every Job. Application::unloadGame() drains it (exitAll)
-     * before destroying frameworks/containers, so jobs never outlive the
-     * objects they capture.
+     * uniquely owns every Job and the lazily created WorkerPool.
+     * Application::unloadGame() drains jobs and stops workers before
+     * destroying frameworks/containers, so nothing outlives the objects it
+     * captures.
      * @example
      * @code
      * Scheduler scheduler;
@@ -138,6 +145,58 @@ namespace LavaEngine
          */
         void dependsOn(JobID id, JobID dependency);
 
+        /**
+         * @brief Returns the worker pool, creating it on first use.
+         * @param workerCount Worker count used when creating the pool; 0 uses
+         *        the WorkerPool default (hardware concurrency, minimum 1).
+         *        Ignored once the pool exists.
+         * @return The scheduler-owned pool.
+         * @note Worker tasks must not touch main-thread-only engine state
+         * (Container, Module, ResourceRegistry, EventBus, Vulkan).
+         */
+        WorkerPool& workerPool(std::size_t workerCount = 0);
+
+        /**
+         * @brief Returns the worker pool without creating it.
+         * @return The pool, or nullptr when no pool has been created yet.
+         * @note Safe to call from the main thread for introspection UIs.
+         */
+        [[nodiscard]] WorkerPool* workerPoolIfCreated() noexcept
+        {
+            return m_workerPool.get();
+        }
+
+        /**
+         * @brief Returns the worker pool without creating it.
+         * @return The pool, or nullptr when no pool has been created yet.
+         */
+        [[nodiscard]] const WorkerPool* workerPoolIfCreated() const noexcept
+        {
+            return m_workerPool.get();
+        }
+
+        /**
+         * @brief Posts a fire-and-forget task to the pool's JobMarket.
+         * @param task Callable run on a worker thread.
+         * @param name Optional human-readable label.
+         * @return False when the current pool has been stopped.
+         * @note Does not create a Scheduler Job and does not participate in
+         * JobID, dependency, or completion tracking.
+         */
+        bool postJobToMarket(
+            std::function<void()> task,
+            std::string name = {}
+        );
+
+        /**
+         * @brief Stops and destroys the worker pool, if any.
+         * @detail Waits for in-flight work and discards jobs that have not
+         * been hired. The pool is recreated lazily by workerPool().
+         * @note Invalidates any reference previously returned by workerPool().
+         * Must not be called from a worker thread.
+         */
+        void stopWorkers();
+
         [[nodiscard]] std::size_t jobCount() const { return m_jobs.size(); }
         [[nodiscard]] std::vector<Job> jobs() const { return m_jobs; }
         [[nodiscard]] std::size_t completedJobCount() const { return m_jobs_completed.size(); }
@@ -164,6 +223,7 @@ namespace LavaEngine
         std::vector<JobID> m_jobs_completed;
         std::vector<Job> m_pending_adds;
         std::vector<JobID> m_pending_removes;
+        std::unique_ptr<WorkerPool> m_workerPool;
         JobID m_nextID = 0;
         bool m_iterating = false;
         bool m_pending_clear = false;

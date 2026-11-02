@@ -24,7 +24,8 @@ namespace LavaEngine
           m_mousePosition(other.m_mousePosition),
           m_previousMousePosition(other.m_previousMousePosition),
           m_mouseDelta(other.m_mouseDelta),
-          m_firstUpdate(other.m_firstUpdate)
+          m_firstUpdate(other.m_firstUpdate),
+          m_focused(other.m_focused)
     {
         other.m_window = nullptr;
     }
@@ -43,6 +44,7 @@ namespace LavaEngine
         m_previousMousePosition = other.m_previousMousePosition;
         m_mouseDelta = other.m_mouseDelta;
         m_firstUpdate = other.m_firstUpdate;
+        m_focused = other.m_focused;
 
         other.m_window = nullptr;
 

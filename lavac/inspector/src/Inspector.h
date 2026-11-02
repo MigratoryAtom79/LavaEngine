@@ -420,6 +420,8 @@ namespace LavaEngine
 
             drawPerformancePanel();
 
+            drawWorkerPoolPanel();
+
             drawLoggingPanel();
 
             if (vulkan->window().getInputHandler().isKeyPressed(GLFW_KEY_F1))
@@ -545,6 +547,181 @@ namespace LavaEngine
                 {
                     ImGui::TextDisabled("No scheduler available.");
                 }
+            }
+
+            ImGui::End();
+        }
+
+        /**
+         * @brief Visualizes the scheduler's worker pool and its job market.
+         * @detail Shows each worker's busy/idle state and current job, plus
+         * every job still queued in the market. Uses the non-creating pool
+         * peek so merely opening the tab never spawns threads.
+         */
+        void drawWorkerPoolPanel()
+        {
+            if (!ImGui::Begin("Worker Pool"))
+            {
+                ImGui::End();
+                return;
+            }
+
+            LavaEngine::WorkerPool* pool =
+                m_scheduler ? m_scheduler->workerPoolIfCreated() : nullptr;
+
+            if (!pool)
+            {
+                ImGui::TextDisabled(
+                    "No worker pool has been created yet."
+                );
+
+                ImGui::End();
+                return;
+            }
+
+            const std::vector<LavaEngine::WorkerPool::WorkerSnapshot> workers =
+                pool->workerSnapshots();
+
+            std::size_t busy = 0;
+
+            for (const auto& worker : workers)
+            {
+                if (worker.busy)
+                    ++busy;
+            }
+
+            const std::size_t idle = workers.size() - busy;
+
+            ImGui::Text(
+                "Workers: %zu total, %zu busy, %zu idle",
+                workers.size(),
+                busy,
+                idle
+            );
+
+            ImGui::SameLine();
+
+            if (pool->stopped())
+            {
+                ImGui::TextColored(
+                    ImVec4(0.95f, 0.30f, 0.30f, 1.0f),
+                    "STOPPED"
+                );
+            }
+            else
+            {
+                ImGui::TextColored(
+                    ImVec4(0.35f, 0.85f, 0.45f, 1.0f),
+                    "RUNNING"
+                );
+            }
+
+            const std::size_t capacity = pool->market().capacity();
+            const std::size_t queued = pool->market().size();
+
+            if (capacity == 0)
+            {
+                ImGui::Text("Market: %zu queued (unbounded)", queued);
+            }
+            else
+            {
+                ImGui::Text(
+                    "Market: %zu / %zu queued",
+                    queued,
+                    capacity
+                );
+            }
+
+            ImGui::Separator();
+
+            if (ImGui::BeginTable(
+                    "##workers",
+                    3,
+                    ImGuiTableFlags_BordersInnerH |
+                    ImGuiTableFlags_RowBg |
+                    ImGuiTableFlags_SizingStretchProp
+                ))
+            {
+                ImGui::TableSetupColumn("Worker");
+                ImGui::TableSetupColumn("State");
+                ImGui::TableSetupColumn("Current job");
+                ImGui::TableHeadersRow();
+
+                for (const auto& worker : workers)
+                {
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+
+                    ImGui::Text("Worker %zu", worker.id);
+
+                    ImGui::TableNextColumn();
+
+                    const ImVec4 color =
+                        worker.busy
+                            ? ImVec4(0.95f, 0.25f, 0.30f, 1.0f)
+                            : ImVec4(0.25f, 0.60f, 0.35f, 1.0f);
+
+                    ImGui::ColorButton(
+                        "##state",
+                        color,
+                        ImGuiColorEditFlags_NoTooltip |
+                        ImGuiColorEditFlags_NoPicker,
+                        ImVec2(14.0f, 14.0f)
+                    );
+
+                    ImGui::SameLine();
+                    ImGui::TextUnformatted(worker.busy ? "BUSY" : "IDLE");
+
+                    ImGui::TableNextColumn();
+
+                    if (worker.busy)
+                    {
+                        ImGui::TextUnformatted(
+                            worker.jobName.empty()
+                                ? "(unnamed)"
+                                : worker.jobName.c_str()
+                        );
+                    }
+                    else
+                    {
+                        ImGui::TextDisabled("waiting for work");
+                    }
+                }
+
+                ImGui::EndTable();
+            }
+
+            ImGui::Separator();
+            ImGui::TextUnformatted("Queued jobs");
+
+            const std::vector<std::string> queuedNames =
+                pool->market().queuedNames();
+
+            if (queuedNames.empty())
+            {
+                ImGui::TextDisabled("No jobs waiting in the market.");
+            }
+            else
+            {
+                if (ImGui::BeginChild(
+                        "##queued_jobs",
+                        ImVec2(0.0f, 200.0f),
+                        true
+                    ))
+                {
+                    for (std::size_t i = 0; i < queuedNames.size(); ++i)
+                    {
+                        ImGui::Text(
+                            "%zu. %s",
+                            i + 1,
+                            queuedNames[i].empty()
+                                ? "(unnamed)"
+                                : queuedNames[i].c_str()
+                        );
+                    }
+                }
+
+                ImGui::EndChild();
             }
 
             ImGui::End();

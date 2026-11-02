@@ -301,17 +301,14 @@ Note: `VulkanRenderer` owns a `Window` by value, and LavaVK examples also call `
 
 ---
 
-## [ ] ID9 - `InputHandler`/`Window` moves lose state
+## [x] ID9 - `InputHandler`/`Window` moves lose state
 
 **Priority:** P2  
 **Area:** Window / InputHandler
 
-- `InputHandler`'s move ctor/assignment (`src/InputHandler.cpp:18-50`) transfer the window pointer and key/mouse state but **not `m_focused`**, which silently resets to `true`.
-- `Window`'s move ctor (`src/Window.cpp:93-98`) does not transfer `m_lastFrameTime` (`include/LavaEngine/Window.hpp:72`), so the first `tick()` after a move returns a huge `dt`.
-
-### Suggested fixes
-
-- Transfer `m_focused` and `m_lastFrameTime` in the move ops (or initialize `m_lastFrameTime` from `glfwGetTime()` on move to keep `dt` sane).
+- `InputHandler`'s move ctor/assignment now transfer `m_focused`.
+- `Window` is non-movable, so the `m_lastFrameTime` move concern no longer applies.
+- `InputHandler` has no dedicated automated test because constructing it requires a live GLFW window; covered by the manual `lavac` smoke test.
 
 ---
 

@@ -5,6 +5,12 @@
 > **Version observed**: 0.8.1-indev
 >
 > This file contains all notable changes to LavaEngine are documented here.
+> 
+
+## [0.10.0-indev] - 1/11/26
+
+### Added:
+* Added multi-threading using `JobMarket()` and `WorkerPool()`.
 
 ## [0.9.0-indev] - 1/11/26
 
