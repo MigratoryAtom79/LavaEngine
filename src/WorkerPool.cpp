@@ -72,13 +72,15 @@ namespace LavaEngine
 
     bool WorkerPool::post(
         std::function<void()> task,
-        std::string name
+        std::string name,
+        int priority
     )
     {
         return post(
             JobMarket::WorkItem{
                 std::move(name),
-                std::move(task)
+                std::move(task),
+                priority
             }
         );
     }

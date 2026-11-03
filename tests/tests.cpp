@@ -434,7 +434,7 @@ namespace
         CHECK(b.interface() == nullptr);
     }
 
-    void testExposedBoxes()
+    void testExposedReadOnlyVariables()
     {
         Container c("c");
 
@@ -444,11 +444,11 @@ namespace
         double callerDouble = 2.5;
         std::string callerString = "original";
 
-        c.expose("flag", &callerBool);
-        c.expose("count", &callerInt);
-        c.expose("speed", &callerFloat);
-        c.expose("scale", &callerDouble);
-        c.expose("title", &callerString);
+        c.expose("flag", &callerBool, false);
+        c.expose("count", &callerInt, false);
+        c.expose("speed", &callerFloat, false);
+        c.expose("scale", &callerDouble, false);
+        c.expose("title", &callerString, false);
 
         CHECK_EQ(c.variables().size(), std::size_t{5});
 
@@ -478,28 +478,34 @@ namespace
         CHECK(scale != nullptr);
         CHECK(title != nullptr);
 
-        // Simulate Inspector edits.
+        if (!flag || !count || !speed || !scale || !title)
+            return;
+
+        CHECK(!flag->live);
+        CHECK(!count->live);
+        CHECK(!speed->live);
+        CHECK(!scale->live);
+        CHECK(!title->live);
+
+        CHECK(flag->ptr == &callerBool);
+        CHECK(count->ptr == &callerInt);
+        CHECK(speed->ptr == &callerFloat);
+        CHECK(scale->ptr == &callerDouble);
+        CHECK(title->ptr == &callerString);
+
+        // Non-live bindings alias caller memory; the Inspector only makes
+        // them read-only, it does not copy the value.
         *static_cast<bool*>(flag->ptr) = false;
         *static_cast<int*>(count->ptr) = 42;
         *static_cast<float*>(speed->ptr) = 99.0f;
         *static_cast<double*>(scale->ptr) = 123.0;
         *static_cast<std::string*>(title->ptr) = "edited";
 
-        // Exposed variables are boxed copies, not aliases to caller memory.
-        CHECK(callerBool);
-        CHECK_EQ(callerInt, 7);
-        CHECK_EQ(callerFloat, 1.5f);
-        CHECK_EQ(callerDouble, 2.5);
-        CHECK_EQ(callerString, std::string{"original"});
-
-        CHECK(!*static_cast<bool*>(flag->ptr));
-        CHECK_EQ(*static_cast<int*>(count->ptr), 42);
-        CHECK_EQ(*static_cast<float*>(speed->ptr), 99.0f);
-        CHECK_EQ(*static_cast<double*>(scale->ptr), 123.0);
-        CHECK_EQ(
-            *static_cast<std::string*>(title->ptr),
-            std::string{"edited"}
-        );
+        CHECK(!callerBool);
+        CHECK_EQ(callerInt, 42);
+        CHECK_EQ(callerFloat, 99.0f);
+        CHECK_EQ(callerDouble, 123.0);
+        CHECK_EQ(callerString, std::string{"edited"});
     }
 
     void testExposedVariablesSurviveMoveConstruction()
@@ -513,11 +519,11 @@ namespace
         double callerDouble = 2.5;
         std::string callerString = "original";
 
-        source->expose("flag", &callerBool);
-        source->expose("count", &callerInt);
-        source->expose("speed", &callerFloat);
-        source->expose("scale", &callerDouble);
-        source->expose("title", &callerString);
+        source->expose("flag", &callerBool, false);
+        source->expose("count", &callerInt, false);
+        source->expose("speed", &callerFloat, false);
+        source->expose("scale", &callerDouble, false);
+        source->expose("title", &callerString, false);
 
         const auto findVariable =
             [](Container& container, const char* name) -> Variable*
@@ -605,7 +611,7 @@ namespace
 
         bool staleBool = true;
         Container target("target");
-        target.expose("stale", &staleBool);
+        target.expose("stale", &staleBool, false);
 
         bool callerBool = true;
         int callerInt = 7;
@@ -615,11 +621,11 @@ namespace
 
         {
             Container source("source");
-            source.expose("flag", &callerBool);
-            source.expose("count", &callerInt);
-            source.expose("speed", &callerFloat);
-            source.expose("scale", &callerDouble);
-            source.expose("title", &callerString);
+            source.expose("flag", &callerBool, false);
+            source.expose("count", &callerInt, false);
+            source.expose("speed", &callerFloat, false);
+            source.expose("scale", &callerDouble, false);
+            source.expose("title", &callerString, false);
 
             Variable* flag = findVariable(source, "flag");
             Variable* count = findVariable(source, "count");
@@ -696,8 +702,8 @@ namespace
         float speed = 1.5f;
         int count = 3;
 
-        source.exposeLive("speed", &speed);
-        source.exposeLive("count", &count);
+        source.expose("speed", &speed);
+        source.expose("count", &count);
 
         CHECK_EQ(source.variables().size(), std::size_t{2});
 
@@ -739,7 +745,7 @@ namespace
 
         Container target("target");
         int stale = 0;
-        target.exposeLive("stale", &stale);
+        target.expose("stale", &stale);
 
         target = std::move(moved);
 
@@ -755,6 +761,105 @@ namespace
 
         *static_cast<int*>(countVariable->ptr) = 7;
         CHECK_EQ(count, 7);
+    }
+
+    void testExposedVectorVariables()
+    {
+        Container c("c");
+
+        std::vector<int> counts{1, 2, 3};
+        std::vector<float> weights{0.5f, 1.5f};
+        std::vector<bool> flags{true, false};
+        std::vector<std::string> names{"first", "second"};
+
+        c.expose("counts", &counts);
+        c.expose("weights", &weights);
+        c.expose("flags", &flags);
+        c.expose("names", &names);
+
+        CHECK_EQ(c.variables().size(), std::size_t{4});
+
+        const auto findVariable =
+            [&c](const char* name) -> Variable*
+            {
+                for (Variable& variable : c.variables())
+                {
+                    if (variable.name == name)
+                        return &variable;
+                }
+
+                return nullptr;
+            };
+
+        Variable* countsVariable = findVariable("counts");
+        Variable* weightsVariable = findVariable("weights");
+        Variable* flagsVariable = findVariable("flags");
+        Variable* namesVariable = findVariable("names");
+
+        CHECK(countsVariable != nullptr);
+        CHECK(weightsVariable != nullptr);
+        CHECK(flagsVariable != nullptr);
+        CHECK(namesVariable != nullptr);
+
+        if (!countsVariable || !weightsVariable
+            || !flagsVariable || !namesVariable)
+            return;
+
+        CHECK(countsVariable->type == VarType::Vector);
+        CHECK(countsVariable->live);
+        CHECK(countsVariable->elementType == VarType::Int);
+        CHECK(countsVariable->ptr == &counts);
+
+        CHECK(weightsVariable->elementType == VarType::Float);
+        CHECK(weightsVariable->ptr == &weights);
+
+        CHECK(flagsVariable->elementType == VarType::Bool);
+        CHECK(flagsVariable->ptr == &flags);
+
+        CHECK(namesVariable->elementType == VarType::String);
+        CHECK(namesVariable->ptr == &names);
+    }
+
+    void testInspectorCommands()
+    {
+        Container source("source");
+
+        int runs = 0;
+        source.addCommand("Run", [&runs] { ++runs; });
+        source.addCommand("Other", [] {});
+
+        CHECK_EQ(source.commands().size(), std::size_t{2});
+        CHECK_EQ(source.commands()[0].name, std::string{"Run"});
+        CHECK(source.commands()[0].action != nullptr);
+
+        source.commands()[0].action();
+        CHECK_EQ(runs, 1);
+
+        source.addCommand("Run", [&runs] { runs += 10; });
+        CHECK_EQ(source.commands().size(), std::size_t{2});
+        CHECK_EQ(source.commands()[0].name, std::string{"Run"});
+        source.commands()[0].action();
+        CHECK_EQ(runs, 11);
+
+        source.removeCommand("Other");
+        CHECK_EQ(source.commands().size(), std::size_t{1});
+
+        Container moved(std::move(source));
+        CHECK_EQ(moved.commands().size(), std::size_t{1});
+        CHECK_EQ(moved.commands()[0].name, std::string{"Run"});
+        moved.commands()[0].action();
+        CHECK_EQ(runs, 21);
+
+        Container target("target");
+        target.addCommand("Stale", [] {});
+        target = std::move(moved);
+        CHECK_EQ(target.commands().size(), std::size_t{1});
+        CHECK_EQ(target.commands()[0].name, std::string{"Run"});
+        target.commands()[0].action();
+        CHECK_EQ(runs, 31);
+
+        target.removeCommand("Run");
+        CHECK(target.commands().empty());
     }
 
     void testTeardownHooksRunBeforeDestruction()
@@ -1669,6 +1774,44 @@ namespace
         CHECK_EQ(market.queuedNames().size(), std::size_t{2});
     }
 
+    void testJobMarketPriorityOrder()
+    {
+        JobMarket market;
+
+        CHECK(market.post({"low", [] {}, 0}));
+        CHECK(market.post({"high first", [] {}, 10}));
+        CHECK(market.post({"medium", [] {}, 5}));
+        CHECK(market.post({"high second", [] {}, 10}));
+        CHECK(market.post([] {}, "urgent", 20));
+
+        const std::vector<std::string> names = market.queuedNames();
+
+        CHECK_EQ(names.size(), std::size_t{5});
+        CHECK_EQ(names[0], std::string("urgent"));
+        CHECK_EQ(names[1], std::string("high first"));
+        CHECK_EQ(names[2], std::string("high second"));
+        CHECK_EQ(names[3], std::string("medium"));
+        CHECK_EQ(names[4], std::string("low"));
+
+        JobMarket::WorkItem item;
+
+        CHECK(market.tryTake(item));
+        CHECK_EQ(item.name, std::string("urgent"));
+        CHECK_EQ(item.priority, 20);
+
+        CHECK(market.tryTake(item));
+        CHECK_EQ(item.name, std::string("high first"));
+
+        CHECK(market.tryTake(item));
+        CHECK_EQ(item.name, std::string("high second"));
+
+        CHECK(market.tryTake(item));
+        CHECK_EQ(item.name, std::string("medium"));
+
+        CHECK(market.tryTake(item));
+        CHECK_EQ(item.name, std::string("low"));
+    }
+
     void testWorkerPoolRunsJobs()
     {
         WorkerPool pool(2);
@@ -1889,6 +2032,41 @@ namespace
 
         CHECK_EQ(completed.load(), 1);
         CHECK(scheduler.workerPool().workerCount() >= 1);
+
+        scheduler.stopWorkers();
+    }
+
+    void testSchedulerPostsWithPriority()
+    {
+        Scheduler scheduler;
+
+        scheduler.workerPool(1);
+
+        std::latch started(1);
+        std::latch release(1);
+
+        CHECK(scheduler.postJobToMarket(
+            [&started, &release]
+            {
+                started.count_down();
+                release.wait();
+            },
+            "blocker"
+        ));
+
+        started.wait();
+
+        CHECK(scheduler.postJobToMarket([] {}, "low", 0));
+        CHECK(scheduler.postJobToMarket([] {}, "high", 10));
+
+        const std::vector<std::string> names =
+            scheduler.workerPool().market().queuedNames();
+
+        CHECK_EQ(names.size(), std::size_t{2});
+        CHECK_EQ(names[0], std::string("high"));
+        CHECK_EQ(names[1], std::string("low"));
+
+        release.count_down();
 
         scheduler.stopWorkers();
     }
@@ -2200,10 +2378,12 @@ namespace
         {"Container module move", testContainerMoveRepointsModules},
         {"Container interface", testContainerInterface},
         {"Container interface move", testContainerMoveRepointsInterface},
-        {"Exposed variables", testExposedBoxes},
+        {"Exposed read-only variables", testExposedReadOnlyVariables},
         {"Exposed variables move construction", testExposedVariablesSurviveMoveConstruction},
         {"Exposed variables move assignment", testExposedVariablesSurviveMoveAssignment},
         {"Exposed live variables", testExposedLiveVariables},
+        {"Exposed vector variables", testExposedVectorVariables},
+        {"Inspector commands", testInspectorCommands},
         {"Teardown ordering", testTeardownHooksRunBeforeDestruction},
         {"Default container unload", testDefaultContainerOnUnload},
         {"Type ID stability", testTypeIdStability},
@@ -2220,6 +2400,7 @@ namespace
         {"JobMarket close discards", testJobMarketCloseDiscards},
         {"JobMarket waitTake", testJobMarketWaitTake},
         {"JobMarket queued names", testJobMarketQueuedNames},
+        {"JobMarket priority order", testJobMarketPriorityOrder},
         {"WorkerPool runs jobs", testWorkerPoolRunsJobs},
         {"WorkerPool survives exceptions", testWorkerPoolSurvivesJobException},
         {"WorkerPool stop discards unhired", testWorkerPoolStopDiscardsUnhired},
@@ -2239,6 +2420,7 @@ namespace
         {"Scheduler worker pool peek", testSchedulerWorkerPoolPeek},
         {"Scheduler worker pool default count", testSchedulerWorkerPoolDefaultCount},
         {"Scheduler posts to market", testSchedulerPostsToMarket},
+        {"Scheduler posts with priority", testSchedulerPostsWithPriority},
         {"Application unload drains workers", testApplicationUnloadDrainsWorkers},
         {"Application step completes job", testApplicationStepCompletesJob},
         {"Application run requestExit", testApplicationRunStopsOnRequestExit},

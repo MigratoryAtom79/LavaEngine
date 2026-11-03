@@ -80,9 +80,14 @@ namespace LavaEngine
          * @brief Posts a task and hires one unemployed worker.
          * @param task Callable run on a worker thread.
          * @param name Optional human-readable label.
+         * @param priority Higher values are taken first; ties stay FIFO.
          * @return False when the pool has been stopped.
          */
-        bool post(std::function<void()> task, std::string name = {});
+        bool post(
+            std::function<void()> task,
+            std::string name = {},
+            int priority = 0
+        );
 
         /**
          * @brief Runs fn over [begin, end) in parallel and waits for all of it.

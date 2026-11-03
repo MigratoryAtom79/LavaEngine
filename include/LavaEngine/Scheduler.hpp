@@ -179,13 +179,15 @@ namespace LavaEngine
          * @brief Posts a fire-and-forget task to the pool's JobMarket.
          * @param task Callable run on a worker thread.
          * @param name Optional human-readable label.
+         * @param priority Higher values are taken first; ties stay FIFO.
          * @return False when the current pool has been stopped.
          * @note Does not create a Scheduler Job and does not participate in
          * JobID, dependency, or completion tracking.
          */
         bool postJobToMarket(
             std::function<void()> task,
-            std::string name = {}
+            std::string name = {},
+            int priority = 0
         );
 
         /**

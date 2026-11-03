@@ -1,4 +1,4 @@
-# LavaEngine [0.10.0-indev]
+# LavaEngine [0.11.0-indev]
 
 **LavaEngine** is a modular C++ game framework designed to provide the infrastructure needed to build games and interactive applications without imposing a predefined engine architecture.
 
@@ -313,8 +313,8 @@ After adding the module, expose its values through the owning Container:
 ```c++
 auto& physics = game.addModule<Physics>();
 
-game.exposeLive("gravity", &physics.gravity);
-game.exposeLive("debugDraw", &physics.debugDraw);
+game.expose("gravity", &physics.gravity);
+game.expose("debugDraw", &physics.debugDraw);
 ```
 
 The Inspector can then automatically display:
@@ -326,15 +326,11 @@ Gravity       [ 9.81 ]
 Debug Draw    [ ✓ ]
 ```
 
-`exposeLive()` binds caller-owned memory directly: Inspector edits modify the
-live value immediately, so `physics.gravity` changes while the game runs. The
-bound object must outlive the binding and keep a stable address. Call
+`expose()` binds caller-owned memory directly. With the default `live = true`,
+Inspector edits modify the value immediately, so `physics.gravity` changes
+while the game runs. Pass `false` to keep a binding read-only without copying
+it. The bound object must outlive the binding and keep a stable address; call
 `unexpose("gravity")` before destroying it early.
-
-`expose()` is the safe alternative. It snapshots the value into
-Container-owned storage; the Inspector edits that copy, not the caller's
-variable. Use it for read-mostly diagnostics or when the original lifetime is
-uncertain.
 
 For example:
 
@@ -424,7 +420,20 @@ Debug Draw     ✓
 [Rebuild Broadphase]
 ```
 
-These commands can be registered by modules and executed by the Inspector.
+These commands are registered on the owning Container and executed by the
+Inspector:
+
+```c++
+auto& physics = game.addModule<Physics>();
+
+game.addCommand("Reset Simulation", [&physics] { physics.reset(); });
+game.addCommand("Clear Bodies", [&physics] { physics.clearBodies(); });
+```
+
+`addCommand()` replaces an existing command with the same name. Captured state
+must outlive the command; call `removeCommand("Reset Simulation")` before
+destroying it. Commands run synchronously on the main thread, so they can
+safely touch game state while the simulation is paused.
 
 This allows development tools to interact with systems without requiring the Inspector to understand their internal implementation.
 
@@ -502,6 +511,20 @@ engine.getScheduler()->postJobToMarket(
 `postJobToMarket()` is fire-and-forget: it does not create a `Scheduler::Job`
 and does not participate in `JobID`s, dependencies, or completion tracking.
 
+Jobs can be prioritized. Higher `priority` values are taken first, and jobs
+with the same priority stay in FIFO order:
+
+```c++
+engine.getScheduler()->postJobToMarket(
+    [] { loadCriticalChunk(); },
+    "critical chunk",
+    10
+);
+```
+
+The same priority argument is available on `WorkerPool::post` and
+`JobMarket::post` / `tryPost`, or set `JobMarket::WorkItem::priority` directly.
+
 For parallel work with a phase boundary, use `WorkerPool::parallelFor`:
 
 ```c++
@@ -572,12 +595,11 @@ reload) tears the session down in a fixed, deterministic order:
   `ResourceView` keeps a weak reference and reports `invalid()` once the
   owner or resource is gone.
 - `importResource()` returns a `ResourceView`, never a raw pointer.
-- `expose()` snapshots the value into an owned box; the Inspector edits the
-  box, never caller memory. Boxes move with the Container and their
-  `Variable::ptr` values are rebound after a move.
-- `exposeLive()` is a non-owning binding: the Inspector edits caller memory
-  directly. The target must outlive the binding or be removed with
-  `unexpose()` first.
+- `expose()` is a non-owning binding. With `live = true` the Inspector edits
+  caller memory directly; with `live = false` it only reads it. The target
+  must outlive the binding or be removed with `unexpose()` first.
+- `addCommand()` registers an Inspector button. The action's captures must
+  outlive the command or be removed with `removeCommand()` first.
 - Modules point back to their owning Container; the back-pointer is re-pointed
   when the Container is moved.
 

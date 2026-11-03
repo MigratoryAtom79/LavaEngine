@@ -90,12 +90,14 @@ namespace LavaEngine
 
     bool Scheduler::postJobToMarket(
         std::function<void()> task,
-        std::string name
+        std::string name,
+        int priority
     )
     {
         return workerPool().post(
             std::move(task),
-            std::move(name)
+            std::move(name),
+            priority
         );
     }
 

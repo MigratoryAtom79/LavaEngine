@@ -2,10 +2,16 @@
 
 > **Snapshot**: 2026-09-18
 > **Repository**: https://github.com/RanveerisdeGOAT/LavaEngine
-> **Version observed**: 0.8.1-indev
+> **Version observed**: 0.11.0-indev
 >
 > This file contains all notable changes to LavaEngine are documented here.
-> 
+>
+
+## [0.11.0-indev] - 1/11/26
+
+### Added:
+* Added priority tasks in job market.
+* Added Inspector commands.
 
 ## [0.10.0-indev] - 1/11/26
 

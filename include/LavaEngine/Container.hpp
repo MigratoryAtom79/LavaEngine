@@ -1,10 +1,13 @@
 #pragma once
 
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "EventBus.hpp"
 #include "Interface.hpp"
@@ -22,16 +25,17 @@ namespace LavaEngine
         Bool,
         String,
         Double,
+        Vector,
     };
 
     /**
      * @brief A name/type/value binding exposed to the Inspector.
-     * @detail Created via Container::expose() or Container::exposeLive();
-     * the Inspector reads and writes through `ptr` according to `type`.
+     * @detail Created via Container::expose(); the Inspector reads through
+     * `ptr` according to `type`, using `elementType` for vectors. Live
+     * variables are editable, non-live variables are read-only.
      * @note Ownership: Owned by the owning Container (by value in
-     * `m_variables`). Snapshot variables point into an owned heap box in
-     * `m_boxes`. Live variables point at caller-owned memory that must
-     * outlive the binding.
+     * `m_variables`). `ptr` is a non-owning pointer to caller-owned memory
+     * that must outlive the binding.
      */
     struct Variable
     {
@@ -39,6 +43,22 @@ namespace LavaEngine
         void* ptr;
         VarType type;
         bool live = false;
+        VarType elementType = VarType::Float;
+    };
+
+    /**
+     * @brief A named action exposed to the Inspector.
+     * @detail Created via Container::addCommand(); the Inspector renders a
+     * button and runs `action` when it is clicked.
+     * @note Ownership: Owned by the Container (by value in `m_commands`).
+     * Captures must outlive the command; call removeCommand() before
+     * destroying captured state. Actions run synchronously on the main
+     * thread.
+     */
+    struct Command
+    {
+        std::string name;
+        std::function<void()> action;
     };
 
 
@@ -74,6 +94,7 @@ namespace LavaEngine
         virtual ~Container()
         {
             removeInterface();
+            m_commands.clear();
             m_modules.clear();
             m_resources.clear();
         }
@@ -332,28 +353,58 @@ namespace LavaEngine
                 module->onUnload();
         }
 
-        void expose(const std::string& name, float* variable);
-        void expose(const std::string& name, int* variable);
-        void expose(const std::string& name, bool* variable);
-        void expose(const std::string& name, double* variable);
-        void expose(const std::string& name, std::string* variable);
-
         /**
-         * @brief Binds a caller-owned value to the Inspector for live editing.
+         * @brief Binds a caller-owned value to the Inspector.
          * @param variable Must outlive this binding and keep a stable address.
-         * @note The Inspector writes directly to `*variable`. Call unexpose()
-         * before destroying it, or keep it alive for the Container's lifetime.
+         * @param live True for an editable binding, false for read-only.
+         * @note The Inspector reads (and, when live, writes) `*variable`.
+         * Call unexpose() before destroying it, or keep it alive for the
+         * Container's lifetime.
          */
-        void exposeLive(const std::string& name, float* variable);
-        void exposeLive(const std::string& name, int* variable);
-        void exposeLive(const std::string& name, bool* variable);
-        void exposeLive(const std::string& name, double* variable);
-        void exposeLive(const std::string& name, std::string* variable);
+        void expose(const std::string& name, float* variable, bool live = true);
+        void expose(const std::string& name, int* variable, bool live = true);
+        void expose(const std::string& name, bool* variable, bool live = true);
+        void expose(const std::string& name, double* variable, bool live = true);
+        void expose(const std::string& name, std::string* variable, bool live = true);
 
         /**
-         * @brief Removes an exposed snapshot or live binding by name.
+         * @brief Live-binds a vector so the Inspector can edit its elements.
+         * @param variable Must outlive this binding; the Inspector mutates it
+         * in place.
+         * @note Supported element types: bool, int, float, double,
+         * std::string.
+         */
+        template <typename T>
+        void expose(const std::string& name, std::vector<T>* variable, bool live = true);
+
+        /**
+         * @brief Removes an exposed binding by name.
          */
         void unexpose(const std::string& name);
+
+        /**
+         * @brief Registers or replaces an Inspector command.
+         * @param name Button label shown in the Inspector.
+         * @param action Callable run when the button is pressed.
+         * @note The action runs synchronously on the main thread. Its
+         * captures must outlive the command; call removeCommand() before
+         * destroying captured state.
+         */
+        void addCommand(const std::string& name, std::function<void()> action);
+
+        /**
+         * @brief Removes an Inspector command by name.
+         */
+        void removeCommand(const std::string& name);
+
+        /**
+         * @brief Read-only access to this container's Inspector commands.
+         */
+        [[nodiscard]]
+        const std::vector<Command>& commands() const
+        {
+            return m_commands;
+        }
 
         /**
          * @brief Registers `handler` as this container's subscription to Event.
@@ -399,6 +450,18 @@ namespace LavaEngine
             return m_variables;
         }
 
+        [[nodiscard]]
+        std::mutex& mutex() noexcept
+        {
+            return m_mutex;
+        }
+
+        [[nodiscard]]
+        std::unique_lock<std::mutex> lock() const
+        {
+            return std::unique_lock<std::mutex>(m_mutex);
+        }
+
 
     private:
         friend class Application;
@@ -408,19 +471,29 @@ namespace LavaEngine
             m_eventBus = bus;
         }
 
-        // Owns the boxed copy behind each exposed Variable. Heap-allocated
-        // so the address the Variable::ptr points into stays stable even if
-        // m_variables reallocates.
-        struct ExposedBox
+        template <typename T>
+        static constexpr VarType exposedVectorElementType()
         {
-            bool boolean = false;
-            int integer = 0;
-            float floating = 0.0f;
-            double doublePrec = 0.0;
-            std::string stringValue;
-        };
+            if constexpr (std::is_same_v<T, bool>)
+                return VarType::Bool;
+            else if constexpr (std::is_same_v<T, int>)
+                return VarType::Int;
+            else if constexpr (std::is_same_v<T, float>)
+                return VarType::Float;
+            else if constexpr (std::is_same_v<T, double>)
+                return VarType::Double;
+            else if constexpr (std::is_same_v<T, std::string>)
+                return VarType::String;
+            else
+            {
+                static_assert(
+                    !std::is_same_v<T, T>,
+                    "Unsupported vector element type for Container::expose"
+                );
 
-        void rebindExposedVariables() noexcept;
+                return VarType::Float;
+            }
+        }
 
         std::string m_name;
 
@@ -428,7 +501,29 @@ namespace LavaEngine
         ResourceRegistry m_resources;
         EventBus* m_eventBus = nullptr;
         std::vector<Variable> m_variables;
-        std::vector<std::unique_ptr<ExposedBox>> m_boxes;
+        std::vector<Command> m_commands;
         std::unique_ptr<Interface> m_interface;
+
+        mutable std::mutex m_mutex;
     };
+
+
+
+    template <typename T>
+    void Container::expose(
+        const std::string& name,
+        std::vector<T>* variable,
+        bool live
+    )
+    {
+        m_variables.push_back(
+            Variable{
+                name,
+                variable,
+                VarType::Vector,
+                live,
+                exposedVectorElementType<T>()
+            }
+        );
+    }
 }

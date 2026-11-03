@@ -2,8 +2,8 @@
 
 #include <condition_variable>
 #include <cstddef>
-#include <deque>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -14,8 +14,10 @@ namespace LavaEngine
     /**
      * @brief Thread-safe queue of work consumed by a WorkerPool.
      * @detail Producers post WorkItems and worker threads wait for them.
-     * Closing the market rejects further posts, discards items that have not
-     * been taken, and wakes every waiting worker so it can exit.
+     * Items with a higher `priority` value are taken first; equal priorities
+     * keep FIFO order. Closing the market rejects further posts, discards
+     * items that have not been taken, and wakes every waiting worker so it
+     * can exit.
      * @note Ownership: Owned by a WorkerPool. WorkItems are owned by the
      * market until take; callers keep ownership of anything their task
      * captures.
@@ -39,6 +41,7 @@ namespace LavaEngine
         {
             std::string name;
             std::function<void()> task;
+            int priority = 0;
         };
 
         /**
@@ -49,18 +52,44 @@ namespace LavaEngine
 
         /**
          * @brief Enqueues work and wakes one waiting worker.
-         * @param item The work to post.
+         * @param item The work to post; `priority` orders it in the queue.
          * @return False when the market is closed; the item is not queued.
          * @note Blocks while a bounded market is full.
          */
         bool post(WorkItem item);
 
         /**
+         * @brief Enqueues a task with an optional name and priority.
+         * @param task Callable run on a worker thread.
+         * @param name Optional human-readable label.
+         * @param priority Higher values are taken first; ties stay FIFO.
+         * @return False when the market is closed.
+         */
+        bool post(
+            std::function<void()> task,
+            std::string name = {},
+            int priority = 0
+        );
+
+        /**
          * @brief Enqueues work without blocking when the market is full.
-         * @param item The work to post.
+         * @param item The work to post; `priority` orders it in the queue.
          * @return False when the market is closed or full.
          */
         bool tryPost(WorkItem item);
+
+        /**
+         * @brief Enqueues a task without blocking when the market is full.
+         * @param task Callable run on a worker thread.
+         * @param name Optional human-readable label.
+         * @param priority Higher values are taken first; ties stay FIFO.
+         * @return False when the market is closed or full.
+         */
+        bool tryPost(
+            std::function<void()> task,
+            std::string name = {},
+            int priority = 0
+        );
 
         /**
          * @brief Takes the oldest queued item without blocking.
@@ -95,8 +124,9 @@ namespace LavaEngine
         std::size_t capacity() const;
 
         /**
-         * @brief Returns a snapshot of the queued job names in FIFO order.
-         * @return Copies of the names; empty names are preserved.
+         * @brief Returns a snapshot of queued job names in execution order.
+         * @return Copies of the names, highest priority first and FIFO within
+         *         a priority; empty names are preserved.
          */
         [[nodiscard]]
         std::vector<std::string> queuedNames() const;
@@ -111,7 +141,7 @@ namespace LavaEngine
         mutable std::mutex m_mutex;
         std::condition_variable m_cv;
         std::condition_variable m_notFull;
-        std::deque<WorkItem> m_jobs;
+        std::multimap<int, WorkItem, std::greater<int>> m_jobs;
         std::size_t m_capacity = 0;
         bool m_closed = false;
     };

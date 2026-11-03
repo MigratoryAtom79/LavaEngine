@@ -8,10 +8,12 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <typeinfo>
 #include <vector>
 
@@ -119,6 +121,15 @@ namespace LavaEngine
                 draw();
 
                 ImGui::Render();
+
+                if (m_pendingCommand)
+                {
+                    std::function<void()> command =
+                        std::move(m_pendingCommand);
+
+                    m_pendingCommand = nullptr;
+                    command();
+                }
 
                 if (!paused)
                 {
@@ -693,6 +704,8 @@ namespace LavaEngine
 
             ImGui::Separator();
             ImGui::TextUnformatted("Queued jobs");
+            ImGui::SameLine();
+            ImGui::TextDisabled("(highest priority first)");
 
             const std::vector<std::string> queuedNames =
                 pool->market().queuedNames();
@@ -914,6 +927,137 @@ namespace LavaEngine
         }
 
 
+        template <typename T>
+        static void drawVectorElements(
+            const std::string& name,
+            std::vector<T>& values,
+            bool editable
+        )
+        {
+            if (!ImGui::TreeNodeEx(
+                name.c_str(),
+                ImGuiTreeNodeFlags_DefaultOpen
+            ))
+            {
+                return;
+            }
+
+            ImGui::TextDisabled("%zu elements", values.size());
+
+            for (std::size_t i = 0; i < values.size(); ++i)
+            {
+                const std::string label =
+                    name + "[" + std::to_string(i) + "]";
+
+                ImGui::PushID(static_cast<int>(i));
+
+                if (!editable)
+                    ImGui::BeginDisabled();
+
+                if constexpr (std::is_same_v<T, bool>)
+                {
+                    bool value = values[i];
+
+                    if (ImGui::Checkbox(label.c_str(), &value))
+                        values[i] = value;
+                }
+                else if constexpr (std::is_same_v<T, int>)
+                {
+                    ImGui::InputInt(label.c_str(), &values[i]);
+                }
+                else if constexpr (std::is_same_v<T, float>)
+                {
+                    ImGui::InputFloat(label.c_str(), &values[i]);
+                }
+                else if constexpr (std::is_same_v<T, double>)
+                {
+                    ImGui::InputDouble(label.c_str(), &values[i]);
+                }
+                else if constexpr (std::is_same_v<T, std::string>)
+                {
+                    char buffer[256];
+                    buffer[0] = '\0';
+                    strncpy(
+                        buffer,
+                        values[i].c_str(),
+                        sizeof(buffer) - 1
+                    );
+                    buffer[sizeof(buffer) - 1] = '\0';
+
+                    if (ImGui::InputText(
+                        label.c_str(),
+                        buffer,
+                        sizeof(buffer)
+                    ))
+                    {
+                        values[i] = buffer;
+                    }
+                }
+
+                if (!editable)
+                    ImGui::EndDisabled();
+
+                ImGui::PopID();
+            }
+
+            ImGui::TreePop();
+        }
+
+        static void drawVectorVariable(const Variable& variable)
+        {
+            switch (variable.elementType)
+            {
+                case VarType::Bool:
+                    drawVectorElements(
+                        variable.name,
+                        *static_cast<std::vector<bool>*>(variable.ptr),
+                        variable.live
+                    );
+                    break;
+
+                case VarType::Int:
+                    drawVectorElements(
+                        variable.name,
+                        *static_cast<std::vector<int>*>(variable.ptr),
+                        variable.live
+                    );
+                    break;
+
+                case VarType::Float:
+                    drawVectorElements(
+                        variable.name,
+                        *static_cast<std::vector<float>*>(variable.ptr),
+                        variable.live
+                    );
+                    break;
+
+                case VarType::Double:
+                    drawVectorElements(
+                        variable.name,
+                        *static_cast<std::vector<double>*>(variable.ptr),
+                        variable.live
+                    );
+                    break;
+
+                case VarType::String:
+                    drawVectorElements(
+                        variable.name,
+                        *static_cast<std::vector<std::string>*>(
+                            variable.ptr
+                        ),
+                        variable.live
+                    );
+                    break;
+
+                default:
+                    ImGui::TextDisabled(
+                        "%s: unsupported vector element type",
+                        variable.name.c_str()
+                    );
+                    break;
+            }
+        }
+
         void drawContainersPanel()
         {
             if (ImGui::Begin("Containers & Events"))
@@ -953,6 +1097,15 @@ namespace LavaEngine
                                 if (container->variables().empty()) ImGui::Text("(no exposed variables)");
                                 for (const Variable& variable : container->variables())
                                 {
+                                    if (variable.type == VarType::Vector)
+                                    {
+                                        drawVectorVariable(variable);
+                                        continue;
+                                    }
+
+                                    if (!variable.live)
+                                        ImGui::BeginDisabled();
+
                                     if (variable.type == VarType::Bool) ImGui::Checkbox(
                                         variable.name.c_str(), static_cast<bool*>(variable.ptr));
                                     if (variable.type == VarType::Int) ImGui::InputInt(
@@ -981,6 +1134,30 @@ namespace LavaEngine
                                             *static_cast<std::string*>(variable.ptr) = buffer;
                                         }
                                     }
+
+                                    if (!variable.live)
+                                        ImGui::EndDisabled();
+                                }
+
+                                ImGui::TreePop();
+                            }
+
+                            if (ImGui::TreeNodeEx("Commands"))
+                            {
+                                const std::vector<Command> commands =
+                                    container->commands();
+
+                                if (commands.empty())
+                                    ImGui::TextDisabled("(no commands)");
+
+                                for (std::size_t i = 0; i < commands.size(); ++i)
+                                {
+                                    ImGui::PushID(static_cast<int>(i));
+
+                                    if (ImGui::Button(commands[i].name.c_str()))
+                                        m_pendingCommand = commands[i].action;
+
+                                    ImGui::PopID();
                                 }
 
                                 ImGui::TreePop();
@@ -1958,6 +2135,8 @@ namespace LavaEngine
     private:
         UserGame& m_application;
         Scheduler* m_scheduler;
+
+        std::function<void()> m_pendingCommand;
 
         VulkanRenderer* vulkan = nullptr;
         std::unique_ptr<DescriptorPool> m_imguiPool;

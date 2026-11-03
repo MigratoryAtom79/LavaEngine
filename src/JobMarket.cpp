@@ -23,12 +23,28 @@ namespace LavaEngine
             if (m_closed)
                 return false;
 
-            m_jobs.push_back(std::move(item));
+            const int priority = item.priority;
+            m_jobs.emplace(priority, std::move(item));
         }
 
         m_cv.notify_one();
 
         return true;
+    }
+
+    bool JobMarket::post(
+        std::function<void()> task,
+        std::string name,
+        int priority
+    )
+    {
+        return post(
+            WorkItem{
+                std::move(name),
+                std::move(task),
+                priority
+            }
+        );
     }
 
     bool JobMarket::tryPost(WorkItem item)
@@ -39,12 +55,28 @@ namespace LavaEngine
             if (m_closed || !hasRoom())
                 return false;
 
-            m_jobs.push_back(std::move(item));
+            const int priority = item.priority;
+            m_jobs.emplace(priority, std::move(item));
         }
 
         m_cv.notify_one();
 
         return true;
+    }
+
+    bool JobMarket::tryPost(
+        std::function<void()> task,
+        std::string name,
+        int priority
+    )
+    {
+        return tryPost(
+            WorkItem{
+                std::move(name),
+                std::move(task),
+                priority
+            }
+        );
     }
 
     bool JobMarket::tryTake(WorkItem& out)
@@ -55,8 +87,8 @@ namespace LavaEngine
             if (m_jobs.empty())
                 return false;
 
-            out = std::move(m_jobs.front());
-            m_jobs.pop_front();
+            out = std::move(m_jobs.begin()->second);
+            m_jobs.erase(m_jobs.begin());
         }
 
         m_notFull.notify_one();
@@ -79,8 +111,8 @@ namespace LavaEngine
         if (m_jobs.empty())
             return false;
 
-        out = std::move(m_jobs.front());
-        m_jobs.pop_front();
+        out = std::move(m_jobs.begin()->second);
+        m_jobs.erase(m_jobs.begin());
 
         lock.unlock();
         m_notFull.notify_one();
@@ -136,8 +168,8 @@ namespace LavaEngine
         std::vector<std::string> names;
         names.reserve(m_jobs.size());
 
-        for (const WorkItem& job : m_jobs)
-            names.push_back(job.name);
+        for (const auto& entry : m_jobs)
+            names.push_back(entry.second.name);
 
         return names;
     }
