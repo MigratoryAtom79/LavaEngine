@@ -7,13 +7,18 @@
 > This file contains all notable changes to LavaEngine are documented here.
 >
 
-## [0.11.0-indev] - 1/11/26
+## [0.12.0-indev] - 4/11/26
+
+### Added:
+* Added Mesh, MeshManager and MeshLoader
+
+## [0.11.0-indev] - 3/11/26
 
 ### Added:
 * Added priority tasks in job market.
 * Added Inspector commands.
 
-## [0.10.0-indev] - 1/11/26
+## [0.10.0-indev] - 2/11/26
 
 ### Added:
 * Added multi-threading using `JobMarket()` and `WorkerPool()`.

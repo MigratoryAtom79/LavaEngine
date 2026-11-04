@@ -17,9 +17,13 @@
 #include "Frameworks.hpp"
 #include "Logger.hpp"
 #include "Module.hpp"
-#include "Modules.hpp"
 #include "Resource.hpp"
 #include "Scheduler.hpp"
+
+// built-ins
+#include "built-ins/containers/MeshManager/MeshManager.h"
+#include "built-ins/modules/GraphicalInterface/GraphicalInterface.h"
+#include "built-ins/modules/MeshLoader/MeshLoader.h"
 
 namespace LavaEngine
 {

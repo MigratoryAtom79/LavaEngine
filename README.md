@@ -64,7 +64,7 @@ Interfaces
     Provide access to behavior.
 
 Events
-    Notify other Containers that something happened.
+    Notify a subscribed Container that something happened.
 ```
 
 ### Resources
@@ -74,9 +74,11 @@ A Container can export a resource for other Containers to access.
 For example:
 
 ```c++
-auto levelData = level.exportResource<LevelData>();
+ResourceHandle levelData = level.createResource<LevelData>(...);
+level.exportResource<LevelData>(levelData);
 
-game.importResource(levelData);
+ResourceView<LevelData> view =
+    game.importResource<LevelData>(level, levelData);
 ```
 
 Resources do not necessarily have to be copied.
@@ -137,13 +139,13 @@ A Container owns at most one typed interface:
 ```c++
 struct IWorldEditor : Interface
 {
-    virtual Entity spawn(const SpawnDesc&) = 0;
+    virtual ResourceHandle spawn(const SpawnDesc&) = 0;
 };
 
 class WorldEditor final : public IWorldEditor
 {
 public:
-    Entity spawn(const SpawnDesc& desc) override
+    ResourceHandle spawn(const SpawnDesc& desc) override
     {
         return owner().createResource<EntityResource>(desc);
     }
@@ -160,9 +162,10 @@ if (editor)
 Resolve interfaces through a Container reference; there is no app-wide
 `findInterface<T>()`. Interfaces are non-owning behavior facades over the owning
 Container, invalid after that Container is destroyed or the session is
-unloaded. Use `owner()` to reach modules/resources. Do not use
-`Container::variables()` as live game state: exposed variables are Inspector
-copies, not aliases to module data.
+unloaded. Use `owner()` to reach modules/resources. `Container::variables()`
+returns the current bindings, and each `Variable` stores a non-owning pointer
+to the exposed caller-owned value; do not keep those pointers past the
+binding's lifetime.
 
 Override `Interface::imgui()` to draw interface-specific controls in the
 Inspector's Containers panel.
@@ -179,7 +182,9 @@ Game ──── LevelLoaded ────→ Editor
 Editor ── AssetChanged ───→ Game
 ```
 
-Events are intended for notifications rather than replacing resources or interfaces.
+Events are intended for notifications rather than replacing resources or
+interfaces. Each event type has exactly one subscriber per session; create a
+distinct event type for each listener that needs notification.
 
 A useful distinction is:
 
@@ -218,7 +223,14 @@ Container game;
 
 game.addModule<ECS>();
 game.addModule<Physics>();
-game.addModule<GraphicalPipline>();
+game.addModule<GraphicalPipline>(
+    device,
+    layout,
+    renderPass,
+    vertexLayout,
+    "main.vert",
+    "main.frag"
+);
 ```
 
 A different Container might only require:
@@ -303,6 +315,8 @@ For example:
 class Physics : public Module
 {
 public:
+    void imgui() const override {}
+
     float gravity = 9.81f;
     bool debugDraw = false;
 };
@@ -361,11 +375,7 @@ bool
 int
 float
 string
-enum
 vector
-struct
-array
-handle
 ```
 
 More complicated modules can provide custom Inspector interfaces.
@@ -473,13 +483,16 @@ You can schedule a job like this:
 engine.getScheduler()->createJob(
         [&]() -> int
         {
-            return game.mainloop();
+            updateGame(); // your per-frame work
+            return 0;     // repeat on the next pass
         }
     );
 ```
 
-The return of the task decides if the job needs to be repeated. 
-Returning `0` means the job needs to be repeated while `>0` means the job is completed successfully.
+The return of the task decides what happens next. Returning `0` repeats the
+job on the next pass, `> 0` completes it successfully, and `< 0` cancels it.
+Completed and cancelled jobs run their optional exit callback and no longer
+execute.
 
 Run all job with:
 ```c++
@@ -608,6 +621,8 @@ Modules can run cleanup at teardown by overriding `onUnload()`:
 ```c++
 struct CleanupModule : Module
 {
+    void imgui() const override {}
+
     void onUnload() override
     {
         renderer->clearOverlayCallback();
@@ -626,24 +641,42 @@ automatically — it detaches before teardown and rebinds to the new
 
 ## Manual Smoke Test
 
-Run from the repository root so the example can find its shader files.
+This repository builds the engine, `lavac`, and the unit tests. It does not
+ship a playable example game, so the smoke test uses your own shared library.
+
+Build and run the test suite from the repository root:
 
 ```bash
 cmake -S . -B build
 cmake --build build
-./build/LavaEngine/lavac/lavac ./build/libExample.so inspect
+ctest --test-dir build --output-on-failure
 ```
+
+To run and inspect a game, build a shared library that exports:
+
+```c++
+extern "C" void lavaEngineMain(LavaEngine::Application& engine);
+```
+
+Then launch it through `lavac`:
+
+```bash
+./build/lavac/lavac build/YourGame.so inspect
+```
+
+`lavac` resolves the game path relative to the current directory and copies it
+to a runtime file before loading it.
 
 Verify:
 
-- The window opens and renders the rotating sphere.
-- The Inspector lists Containers, Modules, Resources, Variables and Events.
-- The `Game` container shows the `IGameControl` interface.
-- The interface's rotation-speed slider changes the sphere's rotation.
-- The Inspector can invoke the test event and the count updates.
+- The window opens and renders your game.
+- The Inspector lists Containers, Modules, Resources, Variables, Commands,
+  Interfaces, and Events.
+- Exposed live variables and interface controls update your game.
+- Inspector commands run and invoked events reach their subscriber.
 - Closing the window exits cleanly without an ASan/UBSan report.
-- Rebuilding `Example` while `lavac inspect` is running triggers a reload
-  without a crash.
+- Rebuilding your game library while `lavac inspect` is running triggers a
+  reload without a crash.
 - `ctest --test-dir build --output-on-failure` passes.
 
 ---

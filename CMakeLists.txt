@@ -66,9 +66,6 @@ add_library(LavaEngine SHARED
         include/LavaEngine/Resource.hpp
         src/Resource.cpp
 
-        include/LavaEngine/Modules.hpp
-        src/Modules.cpp
-
         include/LavaEngine/Scheduler.hpp
         src/Scheduler.cpp
 
@@ -90,7 +87,19 @@ add_library(LavaEngine SHARED
         include/LavaEngine/Logger.hpp
         src/Logger.cpp
 
+        include/LavaEngine/InputHandler.hpp
+        src/InputHandler.cpp
 
+        include/LavaEngine/Interface.hpp
+
+        include/LavaEngine/built-ins/modules/GraphicalInterface/GraphicalInterface.cpp
+        include/LavaEngine/built-ins/modules/GraphicalInterface/GraphicalInterface.h
+
+        include/LavaEngine/built-ins/modules/MeshLoader/MeshLoader.cpp
+        include/LavaEngine/built-ins/modules/MeshLoader/MeshLoader.h
+
+        include/LavaEngine/built-ins/containers/MeshManager/MeshManager.cpp
+        include/LavaEngine/built-ins/containers/MeshManager/MeshManager.h
 
         ${IMGUI_DIR}/imgui.cpp
         ${IMGUI_DIR}/imgui_draw.cpp
@@ -101,9 +110,11 @@ add_library(LavaEngine SHARED
 
         ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
         ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
-        include/LavaEngine/InputHandler.hpp
-        src/InputHandler.cpp
-        include/LavaEngine/Interface.hpp
+
+        external/tinyobjloader/tiny_obj_loader.cpp
+        external/tinyobjloader/tiny_obj_loader.h
+        include/LavaEngine/built-ins/resource/Mesh/Mesh.cpp
+        include/LavaEngine/built-ins/resource/Mesh/Mesh.h
 )
 
 target_include_directories(LavaEngine
@@ -113,6 +124,7 @@ target_include_directories(LavaEngine
 
         PRIVATE
         ${IMGUI_DIR}/backends
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/tinyobjloader
 )
 
 target_link_libraries(LavaEngine

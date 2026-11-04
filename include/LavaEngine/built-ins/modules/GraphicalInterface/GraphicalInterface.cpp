@@ -1,4 +1,4 @@
-#include "../include/LavaEngine/Modules.hpp"
+#include "GraphicalInterface.h"
 
 #include "imgui.h"
 

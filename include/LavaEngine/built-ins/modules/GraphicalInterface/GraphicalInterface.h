@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Module.hpp"
 #include "../../LavaVK/include/LavaVK/LavaVK.hpp"
+#include "LavaEngine/Module.hpp"
 
 namespace LavaEngine
 {
